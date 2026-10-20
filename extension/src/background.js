@@ -249,7 +249,7 @@ async function callAnswerApi(cfg, questions) {
   const userText = JSON.stringify({ questions }, null, 2);
   const fullText = systemPrompt + '\n\n【题目】\n' + userText;
 
-  let url = q.endpoint;
+  let url = normalizeChatEndpoint(q.endpoint);
   let headers = { 'Content-Type': 'application/json' };
   let body;
 
@@ -364,6 +364,46 @@ function deriveModelsUrl(endpoint) {
   return u + '/models';
 }
 
+/**
+ * 规整聊天接口地址
+ *
+ * 用户经常只填到 /v1 或干脆填个域名，直接拿去 POST 会 404。
+ * 这里按常见形态补全，避免踩坑：
+ *   https://x                -> https://x/v1/chat/completions
+ *   https://x/v1             -> https://x/v1/chat/completions
+ *   https://x/v1/            -> https://x/v1/chat/completions
+ *   https://x/v1/chat        -> https://x/v1/chat/completions
+ *   已经是完整地址            -> 原样返回
+ */
+function normalizeChatEndpoint(endpoint) {
+  if (!endpoint) return '';
+  let u = endpoint.trim().replace(/\s+/g, '');
+
+  // 已经完整就直接用
+  if (/\/chat\/completions$/i.test(u)) return u;
+
+  // 只写到 /chat 或 /completions
+  if (/\/chat$/i.test(u)) return u + '/completions';
+  if (/\/completions$/i.test(u)) return u.replace(/\/completions$/i, '/chat/completions');
+
+  // 末尾斜杠去掉
+  u = u.replace(/\/+$/, '');
+
+  // 以 /v1、/v2、/api 等结尾：补完整路径
+  if (/\/v\d+$/i.test(u)) return u + '/chat/completions';
+  if (/\/api$/i.test(u)) return u + '/v1/chat/completions';
+
+  // 只有域名（无路径）：补 /v1/chat/completions
+  try {
+    const parsed = new URL(u);
+    if (!parsed.pathname || parsed.pathname === '/') {
+      return u + '/v1/chat/completions';
+    }
+  } catch { /* 不是合法 URL，原样返回 */ }
+
+  return u;
+}
+
 /** 构造请求头 */
 function buildHeaders(q) {
   const headers = { 'Content-Type': 'application/json' };
@@ -474,7 +514,7 @@ async function testConnection(cfg) {
     };
   }
 
-  const resp = await fetchWithTimeout(q.endpoint, {
+  const resp = await fetchWithTimeout(normalizeChatEndpoint(q.endpoint), {
     method: 'POST',
     headers,
     body: JSON.stringify(body)
@@ -643,7 +683,8 @@ async function callVisionApi(cfg, imagesB64, mime) {
 
   // 决定用哪个地址/Key/模型
   const useSame = v.useSameApi !== false;
-  const endpoint = useSame ? q.endpoint : (v.endpoint || q.endpoint);
+  const rawEndpoint = useSame ? q.endpoint : (v.endpoint || q.endpoint);
+  const endpoint = normalizeChatEndpoint(rawEndpoint);
   const apiKey = useSame ? q.apiKey : (v.apiKey || q.apiKey);
   const model = (v.model && v.model.trim()) || q.model;
 

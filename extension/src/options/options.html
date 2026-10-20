@@ -125,7 +125,13 @@
     <div class="field">
       <label>接口地址</label>
       <input type="text" id="endpoint" placeholder="https://api.openai.com/v1/chat/completions">
-      <div class="hint">完整 URL，要包含 <code>/chat/completions</code></div>
+      <div class="status-inline" id="endpointPreview" style="display:none">
+        <span class="dot-s ok"></span><span id="endpointPreviewMsg"></span>
+      </div>
+      <div class="hint">
+        填到 <code>/v1</code> 也可以，会自动补全成 <code>/v1/chat/completions</code>。
+        留空路径也会补全，但建议填完整。
+      </div>
     </div>
 
     <div class="field">

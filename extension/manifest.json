@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "学习通自动学习助手",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "超星学习通章节自动学习：视频倍速/静音/防暂停、文档自动滚动、自动切下一节；章节测验可调用自定义 API 自动作答。",
   "minimum_chrome_version": "102",
 

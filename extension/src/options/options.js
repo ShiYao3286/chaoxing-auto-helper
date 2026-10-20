@@ -87,6 +87,7 @@ function fillForm(cfg) {
   toggleCustom();
   toggleVisionOwn();
   updateVisionBadge();
+  updateEndpointPreview();
 }
 
 /** 自定义模式字段显隐 */
@@ -118,6 +119,56 @@ function updateVisionBadge() {
     badge.textContent = '自动判断';
     badge.style.background = '#eef4ff';
     badge.style.color = '#1c4faa';
+  }
+}
+
+/**
+ * 实时预览接口地址最终会变成什么
+ *
+ * 用户经常只填到 /v1，直接 POST 会 404（真实踩过）。
+ * 这里把补全后的实际地址显示出来，一眼看出对不对。
+ */
+function updateEndpointPreview() {
+  const input = $('#endpoint');
+  const box = $('#endpointPreview');
+  const msg = $('#endpointPreviewMsg');
+  if (!input || !box || !msg) return;
+
+  const raw = input.value.trim();
+  if (!raw) {
+    box.style.display = 'none';
+    return;
+  }
+
+  // 必须与 background.js 的 normalizeChatEndpoint 保持一致
+  function normalize(u) {
+    let s = u.replace(/\s+/g, '');
+    if (/\/chat\/completions$/i.test(s)) return s;
+    if (/\/chat$/i.test(s)) return s + '/completions';
+    if (/\/completions$/i.test(s)) return s.replace(/\/completions$/i, '/chat/completions');
+    s = s.replace(/\/+$/, '');
+    if (/\/v\d+$/i.test(s)) return s + '/chat/completions';
+    if (/\/api$/i.test(s)) return s + '/v1/chat/completions';
+    try {
+      const p = new URL(s);
+      if (!p.pathname || p.pathname === '/') return s + '/v1/chat/completions';
+    } catch { /* 非法 URL 原样返回 */ }
+    return s;
+  }
+
+  const full = normalize(raw);
+  const dot = box.querySelector('.dot-s');
+  box.style.display = 'flex';
+
+  if (full === raw) {
+    dot.className = 'dot-s ok';
+    msg.textContent = '将请求：' + full;
+  } else if (/\/chat\/completions$/i.test(full)) {
+    dot.className = 'dot-s wait';
+    msg.textContent = '将自动补全为：' + full;
+  } else {
+    dot.className = 'dot-s';
+    msg.textContent = '将请求：' + full;
   }
 }
 
@@ -512,6 +563,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('#visionSameApi').addEventListener('change', toggleVisionOwn);
   $('#visionEnabled').addEventListener('change', updateVisionBadge);
   $('#visionMode').addEventListener('change', updateVisionBadge);
+
+  // 接口地址实时预览（防止只填到 /v1 导致 404）
+  const ep = $('#endpoint');
+  if (ep) {
+    ep.addEventListener('input', updateEndpointPreview);
+    ep.addEventListener('change', updateEndpointPreview);
+  }
 
   // 主操作
   $('#btnSave').addEventListener('click', () => save(false));
