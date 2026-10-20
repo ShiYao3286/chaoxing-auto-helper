@@ -57,6 +57,8 @@ if (!window.__CS_BOOTED__) {
     quizDoneSig: '',
     quizRunning: false,
     lastHref: location.href,
+    docDone: false,         // 当前文档是否已看完
+    docNextAt: 0,           // 下次允许滚动的时间（拟人节流）
     speedLocked: false,     // 平台提示「不可倍速」
     speedGiveUp: false,     // 试过被拒，永久放弃倍速
     speedReverts: 0,        // 倍速被改回的次数
@@ -256,47 +258,230 @@ if (!window.__CS_BOOTED__) {
   }
 
   /* ============================================================
-   * 3. 文档 / PPT（仅本文档）
+   * 3. 任务点识别（哪些已完成 / 哪些没完成）
+   * ============================================================ */
+
+  /**
+   * 学习通的任务点状态标记（实地抓取确认）
+   *
+   *   已完成： <span class="icon_Completed prevTips">已完成</span>
+   *   未完成： <span class="catalog_points_yi prevTips">1个待完成任务点</span>
+   *            <span class="orangeNew">1</span>   ← 角标数字
+   *
+   * 课程树节点：.posCatalog_select
+   */
+  const TP = {
+    DONE: '.icon_Completed',
+    TODO: '.catalog_points_yi',
+    BADGE: '.orangeNew',
+    NODE: '.posCatalog_select',
+    NEXT: ['#prevNextFocusNext', '.nextChapter', '.prev_next.next']
+  };
+
+  /** 当前章节是否还有未完成任务点 */
+  function hasPendingTaskPoints() {
+    try {
+      const txt = (document.body?.innerText || '').slice(0, 3000);
+      if (/还有任务点未完成|\d+个待完成任务点/.test(txt)) return true;
+      return qAll(TP.TODO).length > 0;
+    } catch { return false; }
+  }
+
+  /** 本章节任务点统计 */
+  function getTaskPointStats() {
+    try {
+      const done = qAll(TP.DONE).length;
+      const todo = qAll(TP.TODO).length;
+      // 两个都是 0 说明页面上根本没有任务点信息（比如测试页、或者
+      // 当前标签页不是任务点类型），此时不能判成"未完成"，
+      // 否则会误报"还有 0 个任务点未完成"并卡住不翻页。
+      const hasInfo = done > 0 || todo > 0;
+      return {
+        done, todo,
+        hasInfo,
+        allDone: hasInfo && todo === 0,
+        unknown: !hasInfo
+      };
+    } catch { return { done: 0, todo: 0, hasInfo: false, allDone: false, unknown: true }; }
+  }
+
+  /**
+   * 在课程树里找下一个「未完成」的章节
+   *
+   * 用户要求：只看未完成的，跳过已完成的。
+   */
+  function findNextUnfinishedNode() {
+    try {
+      const nodes = qAll(TP.NODE);
+      if (!nodes.length) return null;
+
+      // 找当前节点
+      let curIdx = -1;
+      for (let i = 0; i < nodes.length; i++) {
+        const cls = (nodes[i].className || '').toString();
+        if (/active|current|selected/i.test(cls)) { curIdx = i; break; }
+      }
+
+      const scan = (from, to) => {
+        for (let i = from; i < to; i++) {
+          const n = nodes[i];
+          if (!n.querySelector('.posCatalog_name')) continue;
+          if (n.querySelector(TP.DONE)) continue;   // 已完成，跳过
+          return n;
+        }
+        return null;
+      };
+
+      if (curIdx >= 0) {
+        const after = scan(curIdx + 1, nodes.length);
+        if (after) return after;
+        return scan(0, curIdx);
+      }
+      return scan(0, nodes.length);
+    } catch { return null; }
+  }
+
+  /** 点击某个课程树节点 */
+  function clickTreeNode(node) {
+    if (!node) return false;
+    try {
+      const nameEl = node.querySelector('.posCatalog_name') || node;
+      nameEl.click();
+      return true;
+    } catch { return false; }
+  }
+
+  /* ============================================================
+   * 4. 文档 / PPT —— 拟人化滚动
    * ============================================================ */
 
   let scrollTicks = new WeakMap();
+  let scrollState = null;
 
   function scrollTicksCleanup() {
     scrollTicks = new WeakMap();
+    scrollState = null;
   }
 
+  /**
+   * 找出当前文档里真正需要滚动的东西
+   *
+   * 学习通的内容散在多处：
+   *   · PDF 阅读器在自己的 iframe 里（跨域也有扩展实例，各管各的）
+   *   · 文档容器 #panView / .insertdoc-online-pdf
+   *   · 普通章节页要滚整个文档才能看到「下一节」
+   *
+   * 所以这里按优先级找，找到什么滚什么。
+   */
+  function findScrollTarget() {
+    // 1) 明确的文档容器
+    const panes = qAll('#panView, .insertdoc-online-pdf, .insertdoc, #docContainer');
+    for (const pane of panes) {
+      try {
+        const cands = [pane, ...pane.querySelectorAll('*')]
+          .filter(el => el && el.scrollHeight > el.clientHeight + 60);
+        if (cands.length) return cands[0];
+      } catch { /* ignore */ }
+    }
+
+    // 2) 任何大的可滚动容器（PDF 阅读器常见）
+    try {
+      const big = qAll('div, section, article')
+        .filter(el => {
+          if (!el || el === document.body || el === document.documentElement) return false;
+          const sh = el.scrollHeight, ch = el.clientHeight;
+          // 高度要够大，且确实能滚
+          return sh > ch + 100 && ch > 200 && el.offsetParent !== null;
+        })
+        .sort((a, b) => b.scrollHeight - a.scrollHeight);
+      if (big.length) return big[0];
+    } catch { /* ignore */ }
+
+    // 3) 整个文档（普通章节页）
+    const se = document.scrollingElement || document.documentElement;
+    if (se && se.scrollHeight > se.clientHeight + 40) return se;
+
+    return null;
+  }
+
+  /**
+   * 拟人化滚动 —— 1.5 秒一屏
+   *
+   * 用户要求：像人一样慢慢往下看，直到「下一节」出现。
+   * 每 1.5 秒滚一屏的 ~70%，带随机抖动。
+   */
   async function runDocument() {
     if (!state.cfg.auto.docAutoScroll) return false;
 
-    const panes = qAll('#panView, .insertdoc-online-pdf, .insertdoc, #docContainer, .pdfViewer, iframe[src*="pdf"]');
-    if (!panes.length) return false;
+    const now = Date.now();
+    if (state.docNextAt && now < state.docNextAt) return true;   // 节流中
 
-    let handled = false;
-    const step = Number(state.cfg.auto.docStep) || 400;
+    const box = findScrollTarget();
+    if (!box) return false;
 
-    for (const pane of panes) {
-      let boxes;
-      try {
-        boxes = [pane, ...pane.querySelectorAll('*')]
-          .filter(el => el && el.scrollHeight > el.clientHeight + 80);
-      } catch { continue; }
+    const maxTop = box.scrollHeight - box.clientHeight;
+    const cur = box.scrollTop;
 
-      for (const box of boxes) {
-        if (box === document.documentElement || box === document.body) continue;
-        if ((scrollTicks.get(box) || 0) > 400) continue;
-
-        const maxTop = box.scrollHeight - box.clientHeight;
-        if (box.scrollTop >= maxTop - 10) { scrollTicks.set(box, 999); continue; }
-
-        try {
-          box.scrollTop = Math.min(box.scrollTop + step, maxTop);
-          box.dispatchEvent(new Event('scroll', { bubbles: true }));
-        } catch { /* ignore */ }
-        scrollTicks.set(box, (scrollTicks.get(box) || 0) + 1);
-        handled = true;
+    // 已经到底
+    if (cur >= maxTop - 12) {
+      // 若「下一节」已经在视野里，说明这节看完了
+      if (isNextButtonVisible() || getTaskPointStats().allDone) {
+        state.docDone = true;
+        return false;
       }
+      // 到底了但没看到下一节 —— 回顶部再看一轮（人也会往回翻）
+      try {
+        box.scrollTop = 0;
+        box.dispatchEvent(new Event('scroll', { bubbles: true }));
+      } catch { /* ignore */ }
+      state.docNextAt = now + 1500;
+      log('到底，回顶部重看');
+      return true;
     }
-    return handled;
+
+    // 每次滚一屏的 ~70%，加随机抖动模拟真人
+    const vh = box.clientHeight || window.innerHeight;
+    const jitter = Math.round(Math.random() * 80 - 40);
+    const step = Math.max(120, Math.round(vh * 0.7) + jitter);
+    const next = Math.min(cur + step, maxTop);
+
+    try {
+      box.scrollTop = next;
+      box.dispatchEvent(new Event('scroll', { bubbles: true }));
+    } catch { /* ignore */ }
+
+    scrollTicks.set(box, (scrollTicks.get(box) || 0) + 1);
+    state.docNextAt = now + 1500;
+
+    const pct = maxTop > 0 ? Math.round(next / maxTop * 100) : 100;
+    log('滚动 ' + Math.round(cur) + ' → ' + Math.round(next) + '（' + pct + '%）');
+    return true;
+  }
+
+  /** 文档是否已滚到底 */
+  function isDocAtBottom() {
+    try {
+      const box = findScrollTarget();
+      if (!box) return true;
+      return box.scrollTop >= (box.scrollHeight - box.clientHeight) - 12;
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  /** 「下一节」按钮是否已经进入视野 */
+  function isNextButtonVisible() {
+    for (const s of TP.NEXT) {
+      const el = q1(s);
+      if (!el) continue;
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 &&
+            r.top > 0 && r.top < window.innerHeight && r.bottom > 0) {
+          return true;
+        }
+      } catch { /* ignore */ }
+    }
+    return false;
   }
 
   /* ============================================================
@@ -906,29 +1091,94 @@ if (!window.__CS_BOOTED__) {
    * 5. 下一节（仅顶层）
    * ============================================================ */
 
+  /**
+   * 翻到下一节 —— 优先走课程树，跳过已完成章节
+   *
+   * 用户要求：只看未完成的，已完成的直接跳过。
+   *
+   * 策略分三层：
+   *   1. 课程树里找下一个未完成节点（最精准，能跳过完成项）
+   *   2. 退化为点「下一节」按钮（顺序翻页，可能翻到已完成的）
+   *   3. 都没找到 → 报告到底了
+   */
   function clickNext() {
-    const sels = [
-      '#prevNextFocusNext', '.prev_next .next', '.jb_btn_next',
-      '.nodeItem .next', 'a.next', '.next-btn'
-    ];
-    for (const s of sels) {
-      const el = q1(s);
-      if (el) {
-        log('点击下一节', s);
-        try { el.click(); return true; } catch { /* ignore */ }
+    // ── 第一层：课程树精准跳转 ──
+    try {
+      const nextNode = findNextUnfinishedNode();
+      if (nextNode) {
+        const name = (nextNode.querySelector('.posCatalog_name')?.textContent || '').trim().slice(0, 30);
+        log('课程树跳转到未完成节点: ' + name);
+        if (clickTreeNode(nextNode)) return true;
       }
+    } catch (e) { log('课程树跳转失败', e?.message); }
+
+    // ── 第二层：下一节按钮 ──
+    for (const s of TP.NEXT) {
+      const el = q1(s);
+      if (!el) continue;
+      const t = (el.innerText || '').trim();
+      // 避免点到被隐藏的按钮
+      if (el.offsetParent === null && t !== '下一节') continue;
+      log('点击下一节按钮: ' + s);
+      try { el.click(); return true; } catch { /* ignore */ }
     }
 
-    // 无明确按钮时点「下一节」文字
-    const byText = qAll('a, button, span, div')
+    // ── 第三层：按文字找 ──
+    const byText = qAll('a, button, span')
       .find(el => {
         const t = (el.innerText || '').trim();
-        return /^下一节$/.test(t) && el.offsetParent !== null;
+        return /^下一节$/.test(t);
       });
     if (byText) {
       log('按文字点击下一节');
       try { byText.click(); return true; } catch { /* ignore */ }
     }
+
+    return false;
+  }
+
+  /**
+   * 当前章节是否已经全部完成
+   *
+   * 用于判断「能不能直接跳下一节」，
+   * 避免在没完成时跑掉（学习通会弹「还有任务点未完成」的确认框）。
+   */
+  function isCurrentChapterDone() {
+    try {
+      const stats = getTaskPointStats();
+      if (stats.allDone) return true;
+
+      // 页面上有「任务点已完成」标记
+      const txt = (document.body?.innerText || '').slice(0, 3000);
+      if (/任务点已完成/.test(txt) && !/待完成任务点/.test(txt)) return true;
+
+      return false;
+    } catch { return false; }
+  }
+
+  /**
+   * 处理「还有任务点未完成」的确认弹窗
+   *
+   * 学习通在翻页时会弹：「当前章节还有任务点未完成，是否去完成？」
+   * 带「下一节 / 上一节」两个按钮。
+   * 如果用户配了「跳过未完成任务」，就点下一节。
+   */
+  function handleIncompleteDialog() {
+    try {
+      const dialogs = qAll('.con03, .popWord2, [class*=dialog], [class*=modal]');
+      for (const d of dialogs) {
+        const txt = (d.innerText || '');
+        if (!/还有任务点未完成/.test(txt)) continue;
+
+        // 找到了弹窗，点「下一节」
+        const btn = [...d.querySelectorAll('a, button')]
+          .find(b => /下一节/.test((b.innerText || '').trim()));
+        if (btn) {
+          log('检测到「任务点未完成」弹窗，按配置点下一节');
+          try { btn.click(); return true; } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
     return false;
   }
 
@@ -962,17 +1212,19 @@ if (!window.__CS_BOOTED__) {
   async function tick() {
     if (state.stopped) return;
 
-    // 页面跳转了 → 重置测验记录与滚动进度
+    // 页面跳转了 → 重置
     if (location.href !== state.lastHref) {
       state.lastHref = location.href;
       state.quizDoneSig = '';
       state.quizSig = '';
       scrollTicksCleanup();
+      state.docDone = false;
+      state.docNextAt = 0;
     }
 
     if (state.cfg.auto.antiPause) patchWindow(window);
 
-    // 风控页优先判断：命中就立刻停，别的什么都不做
+    // 风控页优先：命中就立刻停
     checkLockSignals();
     if (state.antispider) {
       setStatus('⚠ 检测到平台验证，已停止。请在页面上完成验证', false);
@@ -980,62 +1232,156 @@ if (!window.__CS_BOOTED__) {
       return;
     }
 
-    // (1) 本文档的视频
+    /* ────────────────────────────────────────────
+     * 顶层：只做协调，不碰内容
+     *
+     * 顶层文档是页面外框（导航、目录、按钮），
+     * 真正的视频/文档/测验都在子 iframe 里。
+     * 顶层滚自己的文档只会让「下一节」露出来，
+     * 不能替代学习行为 —— 所以不在这里滚。
+     * ──────────────────────────────────────────── */
+    if (IS_TOP) {
+      // 顶层也可能直接承载内容（单层页面、或学习通把视频放顶层时），
+      // 所以先处理自己的视频/文档，再走协调逻辑
+      if (await runVideo()) {
+        const v = qAll('video')[0];
+        const rate = v ? (v.playbackRate || 1) : 1;
+        const rateText = Math.abs(rate - 1) < 0.05 ? '1x' : rate + 'x';
+        if (v && !v.paused) {
+          if (state.speedGiveUp) {
+            setStatus('▶ 视频播放中（' + rateText + '·平台锁定倍速，已自动放弃加速）', true);
+          } else if (state.speedLocked) {
+            setStatus('▶ 视频播放中（' + rateText + '·本节点已锁定倍速）', true);
+          } else {
+            setStatus('▶ 视频播放中（' + rateText + '）', true);
+          }
+          return;
+        }
+        if (v && v.paused) {
+          setStatus('⚠ 视频未能播放，请在播放器上手动点一下播放', false);
+          return;
+        }
+      }
+      // 测验优先：页面上有题目时先把题做了，别去滚文档
+      if (hasQuiz()) {
+        const did = await runQuiz().catch(e => { log('测验异常', e?.message); return false; });
+        if (did) return;
+      }
+      if (!state.docDone && await runDocument()) {
+        setStatus('📄 文档浏览中（拟人节奏）', true);
+        return;
+      }
+      await tickTop();
+      return;
+    }
+
+    /* ────────────────────────────────────────────
+     * 子 frame：处理自己文档里的内容
+     * ──────────────────────────────────────────── */
+
+    // (1) 视频
     if (await runVideo()) {
-      // 状态必须反映真实情况，否则用户以为在刷、其实没动
       const v = qAll('video')[0];
       const rate = v ? (v.playbackRate || 1) : 1;
       const rateText = Math.abs(rate - 1) < 0.05 ? '1x' : rate + 'x';
 
       if (v && !v.paused) {
         if (state.speedGiveUp) {
-          // 试过加速被拒，已自动放弃 —— 明确告诉用户，别以为是扩展坏了
           setStatus('▶ 视频播放中（' + rateText + '·平台锁定倍速，已自动放弃加速）', true);
         } else if (state.speedLocked) {
           setStatus('▶ 视频播放中（' + rateText + '·本节点已锁定倍速）', true);
         } else {
           setStatus('▶ 视频播放中（' + rateText + '）', true);
         }
-      } else if (v && v.paused) {
-        setStatus('⚠ 视频未能播放，请在播放器上手动点一下播放', false);
+        return;   // 还在播，本 frame 有事做
       }
-      return;
     }
 
-    // (2) 本文档的文档/PPT
-    if (await runDocument()) {
-      setStatus('📄 文档滚动中', true);
-      return;
-    }
-
-    // (3) 本文档的测验
+    // (2) 测验优先：有题目先做题，别滚文档
     if (hasQuiz()) {
       const did = await runQuiz().catch(e => { log('测验异常', e?.message); return false; });
       if (did) return;
     }
 
-    setStatus('✓ 本区域无待办', false);
+    // (3) 文档 / PPT —— 1.5 秒一屏往下看
+    if (!state.docDone && await runDocument()) {
+      setStatus('📄 文档浏览中（拟人节奏）', true);
+      return;
+    }
 
-    // (4) 只有顶层负责翻页，且要等所有 frame 都闲下来
-    if (!IS_TOP) return;
-    if (!state.cfg.auto.autoNext) return;
+    // 本 frame 没事做了
+    setStatus('✓ 本区域完成', false);
+  }
 
-    let busyElsewhere = true;
+  /**
+   * 顶层协调逻辑
+   *
+   * 判断顺序：
+   *   1. 有 frame 在忙 → 等
+   *   2. 本节还有内容没看完 → 等（子 frame 在滚）
+   *   3. 全都完成了 → 翻到下一个未完成章节
+   */
+  async function tickTop() {
+    // 有人忙就先等着
+    let busyElsewhere = false;
     try {
       const r = await chrome.runtime.sendMessage({ type: 'tab:busy' });
       busyElsewhere = !!r?.busy;
     } catch { busyElsewhere = false; }
 
-    if (busyElsewhere) return; // 还有其他 frame 在跑，别急着翻页
-
-    setStatus('⏭ 切换下一节…', false);
-    await sleep(1000);
-    if (!clickNext()) {
-      setStatus('⚠ 未找到下一节按钮', false);
-      await sleep(state.cfg.auto.loopInterval * 2);
+    if (busyElsewhere) {
+      setStatus('⏳ 学习进行中…', true);
+      return;
     }
-  }
 
+    // 本节任务点统计
+    const stats = getTaskPointStats();
+    const chapterDone = isCurrentChapterDone();
+
+    // 处理「还有任务点未完成」的弹窗
+    if (handleIncompleteDialog()) {
+      setStatus('⏭ 已跳过未完成任务点', false);
+      await sleep(2000);
+      return;
+    }
+
+    // 没完成且不允许跳过 → 停在这里提示，但不停止运行。
+    // 注意：stats.unknown（页面上完全没有任务点标记）时不能拦，
+    // 否则普通页面永远翻不了页。
+    if (!chapterDone && !stats.unknown && !state.cfg.auto.skipUnfinished) {
+      setStatus('⚠ 本章还有 ' + stats.todo + ' 个任务点未完成', false);
+      await sleep(state.cfg.auto.loopInterval * 2);
+      return;
+    }
+
+    if (!state.cfg.auto.autoNext) {
+      setStatus('✓ 本节完成（未开自动下一节）', false);
+      return;
+    }
+
+    // 到这里：本节完成，该翻页了
+    setStatus('⏭ 切换到下一个未完成章节…', false);
+    await sleep(1200);
+
+    if (!clickNext()) {
+      state.nextFailCount = (state.nextFailCount || 0) + 1;
+      if (state.nextFailCount >= 3) {
+        setStatus('✓ 已到最后一节，停止', false);
+        state.stopped = true;
+      } else {
+        setStatus('⏳ 未找到下一节，重试 (' + state.nextFailCount + '/3)', false);
+        await sleep(3000);
+      }
+      return;
+    }
+
+    // 跳转成功
+    state.nextFailCount = 0;
+    scrollTicksCleanup();
+    state.docDone = false;
+    state.docNextAt = 0;
+    state.lastHref = location.href;
+  }
   async function loop() {
     while (!state.stopped) {
       try { await tick(); }

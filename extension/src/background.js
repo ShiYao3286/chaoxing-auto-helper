@@ -20,7 +20,9 @@ const DEFAULTS = {
     mute: true,             // 静音
     autoNext: true,         // 完成后自动下一节
     docAutoScroll: true,    // 文档/PPT 自动滚动
-    docStep: 400,           // 单次滚动像素
+    docStep: 400,           // 单次滚动像素（兼容保留）
+    docHumanLike: true,     // 拟人化滚动：1.5 秒一屏
+    skipUnfinished: true,   // 任务点未完成时是否也跳下一节
     docInterval: 1200,      // 滚动间隔 ms
     loopInterval: 2500,     // 主循环间隔 ms
     antiPause: true,        // 防切屏暂停
