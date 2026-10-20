@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const CDP = 'http://127.0.0.1:9335';
+const CDP = process.env.DSH_CDP || 'http://127.0.0.1:9335';
 
 /** 找扩展根目录 */
 function findExtRoot() {

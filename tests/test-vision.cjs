@@ -6,9 +6,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const CDP = 'http://127.0.0.1:9335';
+const CDP = process.env.DSH_CDP || 'http://127.0.0.1:9335';
 const MOCK = 'http://127.0.0.1:9911';
-const PAGE = 'http://127.0.0.1:8792/fake-quiz.html';
+const PAGE = (process.env.DSH_WEB || 'http://127.0.0.1:8792') + '/fake-quiz.html';
 
 /** 找扩展根目录 */
 function findExtRoot() {

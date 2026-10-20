@@ -2,7 +2,7 @@
 const http = require('http');
 const crypto = require('crypto');
 
-const CDP = 'http://127.0.0.1:9335';
+const CDP = process.env.DSH_CDP || 'http://127.0.0.1:9335';
 const MOCK = 'http://127.0.0.1:9911';
 
 let socket = null, idCounter = 0;

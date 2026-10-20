@@ -39,3 +39,7 @@ build/
 *.key
 secrets.json
 config.local.json
+
+# ²âÊÔÊÓÆµËØ²Ä
+sample.mp4
+tests/sample.mp4

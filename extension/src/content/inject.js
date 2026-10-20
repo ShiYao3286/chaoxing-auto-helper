@@ -39,7 +39,8 @@ if (!window.__CS_BOOTED__) {
     quizSig: '',
     quizDoneSig: '',
     quizRunning: false,
-    lastHref: location.href
+    lastHref: location.href,
+    speedLocked: false     // 学习通「任务点未完成」时会锁倍速
   };
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -74,12 +75,54 @@ if (!window.__CS_BOOTED__) {
    * 2. 视频（仅本文档）
    * ============================================================ */
 
+  /**
+   * 检测页面是否禁止倍速
+   *
+   * 学习通在「任务点未完成」时会显示：
+   *   「观看时长需 ≥ 总时长的 70%（未完成任务点前, 当前视频不可倍速、
+   *     不可拖拽、观看时不可离开或将页面最小化）」
+   *
+   * 这种情况下强行改 playbackRate，播放器会当作异常行为反制
+   * —— 实测到的是它直接暂停视频，然后扩展每轮又去 play()，
+   * 形成拉锯，视频看起来完全没动。
+   */
+  function detectSpeedLocked() {
+    try {
+      // 只看当前文档里的提示文字，不跨 iframe
+      const txt = (document.body?.innerText || '').slice(0, 8000);
+      if (/不可倍速|当前视频不可|禁止倍速|不允许倍速/.test(txt)) return true;
+    } catch { /* ignore */ }
+    return !!state.speedLocked;
+  }
+
+  /** 记住倍速被锁的状态，避免每轮都扫 DOM */
+  function updateSpeedLock() {
+    try {
+      const txt = (document.body?.innerText || '').slice(0, 8000);
+      const hasLockText = /不可倍速|当前视频不可倍速|禁止倍速|不允许倍速/.test(txt);
+      const completed = /任务点已完成|恭喜.*完成|已完成学习/.test(txt);
+
+      if (hasLockText) {
+        state.speedLocked = true;
+      } else if (completed) {
+        state.speedLocked = false;
+      } else if (state.speedLocked) {
+        // 提示文字消失了（滚动出视野、或任务点完成），
+        // 且没再看到「未完成任务点」这类文案 → 认为解锁
+        if (!/任务点未完成|未完成任务点/.test(txt)) {
+          state.speedLocked = false;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   async function runVideo() {
     const vids = qAll('video');
     if (!vids.length) return false;
 
+    updateSpeedLock();
+
     let handled = false;
-    const target = Number(state.cfg.auto.rate) || 2;
 
     for (const v of vids) {
       try {
@@ -89,20 +132,29 @@ if (!window.__CS_BOOTED__) {
           try { v.muted = true; v.volume = 0; } catch { /* ignore */ }
         }
 
-        // 倍速：优先 videojs 实例
-        try {
-          const player = v.player || (window.videojs && v.id && window.videojs.getPlayer(v.id));
-          if (player && typeof player.playbackRate === 'function') player.playbackRate(target);
-          else if (Math.abs((v.playbackRate || 1) - target) > 0.01) v.playbackRate = target;
-        } catch { /* ignore */ }
-
-        if (v.paused) {
-          try { await v.play(); } catch { /* 自动播放被拦 */ }
+        // ── 倍速：被锁时完全不碰 ──
+        // 强行设置会触发播放器反制（实测直接暂停），得不偿失。
+        if (!state.speedLocked) {
+          const target = Number(state.cfg.auto.rate) || 2;
+          try {
+            const player = v.player || (window.videojs && v.id && window.videojs.getPlayer(v.id));
+            if (player && typeof player.playbackRate === 'function') player.playbackRate(target);
+            else if (Math.abs((v.playbackRate || 1) - target) > 0.01) v.playbackRate = target;
+          } catch { /* ignore */ }
         }
 
-        // 播放器常偷偷把倍速调回 1x，持续纠正
-        if (!v.paused && Math.abs((v.playbackRate || 1) - target) > 0.01) {
-          try { v.playbackRate = target; } catch { /* ignore */ }
+        // ── 播放：验证真的播起来了 ──
+        if (v.paused) {
+          try { await v.play(); } catch (e) { log('play() 被拒', e?.message); }
+
+          // play() 返回后不一定真的在播（自动播放拦截等），
+          // 等一小会儿再确认，避免状态栏谎报「播放中」。
+          if (v.paused) {
+            await sleep(280);
+            if (v.paused) {
+              try { await v.play(); } catch { /* 再试一次 */ }
+            }
+          }
         }
 
         handled = true;
@@ -830,7 +882,20 @@ if (!window.__CS_BOOTED__) {
 
     // (1) 本文档的视频
     if (await runVideo()) {
-      setStatus('▶ 视频播放中（' + state.cfg.auto.rate + 'x）', true);
+      // 状态必须反映真实情况，否则用户以为在刷、其实没动
+      const v = qAll('video')[0];
+      const rate = v ? (v.playbackRate || 1) : 1;
+      const rateText = Math.abs(rate - 1) < 0.05 ? '1x' : rate + 'x';
+
+      if (v && !v.paused) {
+        if (state.speedLocked) {
+          setStatus('▶ 视频播放中（' + rateText + '·本节点已锁定倍速）', true);
+        } else {
+          setStatus('▶ 视频播放中（' + rateText + '）', true);
+        }
+      } else if (v && v.paused) {
+        setStatus('⚠ 视频未能播放，请在播放器上手动点一下播放', false);
+      }
       return;
     }
 

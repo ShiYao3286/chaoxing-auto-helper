@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>视频学习页</title>
+<style>
+body{font:14px/1.7 "Microsoft YaHei",sans-serif;padding:20px;background:#f6f8fa}
+.video-box{background:#000;width:640px;height:360px;border-radius:8px;overflow:hidden}
+video{width:100%;height:100%}
+.tip{color:#c9252d;font-size:13px;margin:10px 0}
+button{padding:6px 14px;margin:6px 4px}
+</style></head><body>
+
+<h2>一、从新民主主义到社会主义的转变</h2>
+<div class="tip" id="lockTip">完成条件：观看时长需 ≥ 总时长的 70%（未完成任务点前，当前视频不可倍速、不可拖拽、观看时不可离开或将页面最小化）</div>
+
+<div class="video-box">
+  <!-- 用真实 mp4 文件：MediaStream 视频会忽略 playbackRate，测不出倍速 -->
+  <!-- loop：素材只有几秒，循环播放避免 ended 干扰测试 -->
+  <video id="v" muted playsinline loop src="sample.mp4"></video>
+</div>
+
+<p id="stat">状态：加载中</p>
+<div>
+  <button id="toggleLock">模拟：任务点已完成（解锁倍速）</button>
+  <button id="togglePunish">模拟：播放器反制</button>
+</div>
+
+<script>
+const v = document.getElementById('v');
+
+/* ----------------------------------------------------------
+ * 倍速反制模拟
+ *
+ * 用定期轮询代替 defineProperty 劫持 —— 后者会和真实 setter
+ * 打架，也会干扰被测代码，测不准。
+ *
+ * 关键开关 window.__enforce：
+ *   true  = 任务点未完成，检测到非 1x 就改回去
+ *   false = 任务点已完成，不再管
+ * ---------------------------------------------------------- */
+window.__enforce = true;
+window.__enforceCount = 0;
+
+setInterval(() => {
+  if (!window.__enforce) return;
+  if (v.playbackRate > 1.02) {
+    window.__enforceCount++;
+    v.playbackRate = 1;
+  }
+}, 150);
+
+/* ---------- 状态显示 ---------- */
+setInterval(() => {
+  document.getElementById('stat').textContent =
+    '状态：' + (v.paused ? '已暂停' : '播放中') +
+    ' | 倍速 ' + v.playbackRate +
+    ' | 时间 ' + v.currentTime.toFixed(1) + 's' +
+    ' | 反制次数 ' + window.__enforceCount +
+    ' | 锁 ' + (window.__enforce ? '开' : '关');
+}, 300);
+
+/* ---------- 自动播放拦截开关（供测试用） ---------- */
+window.__blockAutoPlay = false;
+const origPlay = v.play.bind(v);
+v.play = function () {
+  if (window.__blockAutoPlay) {
+    return Promise.reject(new DOMException('play() failed', 'NotAllowedError'));
+  }
+  return origPlay();
+};
+
+/* ---------- 按钮 ---------- */
+document.getElementById('toggleLock').onclick = () => {
+  document.getElementById('lockTip')?.remove();
+  window.__enforce = false;
+  document.getElementById('stat').textContent = '（已模拟任务点完成，倍速解锁）';
+};
+
+document.getElementById('togglePunish').onclick = () => {
+  v.pause();
+  document.getElementById('stat').textContent = '（已模拟播放器反制暂停）';
+};
+</script>
+</body></html>
