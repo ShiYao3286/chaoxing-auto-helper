@@ -1,0 +1,176 @@
+name: 打包发布
+
+# 触发方式：
+#   1. 推送 v 开头的 tag（如 v1.0.0）→ 自动创建 Release 并附上 zip
+#   2. 手动触发（Actions 页面点 Run workflow）→ 只产出 zip 供下载
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 打包扩展
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 校验 manifest
+        run: |
+          set -euo pipefail
+          echo "::group::检查 manifest.json"
+
+          if [ ! -f extension/manifest.json ]; then
+            echo "::error::找不到 extension/manifest.json"
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            const p = "extension/manifest.json";
+            const m = JSON.parse(fs.readFileSync(p, "utf8"));
+
+            console.log("name:     " + m.name);
+            console.log("version:  " + m.version);
+            console.log("manifest: v" + m.manifest_version);
+
+            if (m.manifest_version !== 3) {
+              console.error("::error::必须是 Manifest V3");
+              process.exit(1);
+            }
+            if (!/^\d+\.\d+\.\d+/.test(m.version || "")) {
+              console.error("::error::version 格式不对");
+              process.exit(1);
+            }
+
+            const refs = new Set();
+            Object.values(m.icons || {}).forEach(x => refs.add(x));
+            if (m.background?.service_worker) refs.add(m.background.service_worker);
+            if (m.action?.default_popup) refs.add(m.action.default_popup);
+            if (m.options_page) refs.add(m.options_page);
+            (m.content_scripts || []).forEach(cs => (cs.js || []).forEach(x => refs.add(x)));
+            (m.web_accessible_resources || []).forEach(w =>
+              (w.resources || []).forEach(x => { if (!x.includes("*")) refs.add(x); })
+            );
+
+            let miss = 0;
+            for (const r of refs) {
+              if (!fs.existsSync("extension/" + r)) {
+                console.error("::error::引用的文件不存在: " + r);
+                miss++;
+              }
+            }
+            if (miss) process.exit(1);
+
+            console.log("引用文件全部存在（" + refs.size + " 个）");
+            fs.writeFileSync("version.txt", m.version);
+          '
+          echo "::endgroup::"
+
+      - name: 校验 JS 语法
+        run: |
+          set -euo pipefail
+          echo "::group::语法检查"
+          fail=0
+          while IFS= read -r f; do
+            if node --check "$f"; then
+              echo "  OK   $f"
+            else
+              echo "::error::$f 语法错误"
+              fail=1
+            fi
+          done < <(find extension -name '*.js' -type f | sort)
+          echo "::endgroup::"
+          exit $fail
+
+      - name: 读取版本号
+        id: ver
+        run: |
+          set -euo pipefail
+          VERSION=$(cat version.txt)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "版本号: $VERSION"
+          echo "标签:   $TAG"
+
+      - name: 打包
+        run: |
+          set -euo pipefail
+          echo "::group::生成 zip"
+
+          # 关键：把 extension 目录里的内容放到 zip 根，
+          # 解压出来第一层就是 manifest.json，Edge 可以直接选这个目录加载。
+          cd extension
+          zip -r -q ../chaoxing-auto-helper.zip . \
+            -x '*.DS_Store' -x '__MACOSX/*' -x '*.log' -x '*.map'
+          cd ..
+
+          echo "::endgroup::"
+
+          echo "::group::内容清单"
+          unzip -l chaoxing-auto-helper.zip
+          echo "::endgroup::"
+
+          SIZE=$(du -h chaoxing-auto-helper.zip | cut -f1)
+          echo "大小: $SIZE"
+
+          # 自检：zip 根下必须有 manifest.json
+          if ! unzip -l chaoxing-auto-helper.zip | grep -qE '^\s+[0-9]+\s+.*\smanifest\.json$'; then
+            echo "::error::zip 结构不对，根目录下没有 manifest.json"
+            exit 1
+          fi
+          echo "结构自检通过"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaoxing-auto-helper-${{ steps.ver.outputs.version }}
+          path: chaoxing-auto-helper.zip
+          retention-days: 90
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.ver.outputs.tag }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: chaoxing-auto-helper.zip
+          draft: false
+          prerelease: false
+          body: |
+            ## 下载安装
+
+            1. 下载下面的 `chaoxing-auto-helper.zip`
+            2. **解压**到任意目录（解压后第一层应能看到 `manifest.json`）
+            3. 打开 `edge://extensions/`（Chrome 用 `chrome://extensions/`）
+            4. 打开左下角「开发人员模式」
+            5. 点「加载解压缩的扩展」，选**解压出来的那个目录**
+            6. 刷新已打开的学习通页面
+
+            > 选目录时注意：要选到**直接包含 `manifest.json`** 的那一层。
+            > 如果你的解压工具多套了一层（如 `chaoxing-auto-helper/extension/`），
+            > 请进入 `extension` 再选。
+
+            ## 使用
+
+            1. 点工具栏扩展图标 → 设置
+            2. 填 API 地址和 Key，点「拉取模型」选一个模型
+            3. 点「测试连通」确认可用
+            4. 打开学习通章节页，右下角面板点「开始」
+
+            详细文档见 [README](https://github.com/${{ github.repository }}#readme)。
+
+            版本：`${{ steps.ver.outputs.version }}`
