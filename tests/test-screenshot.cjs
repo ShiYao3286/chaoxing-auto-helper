@@ -103,7 +103,7 @@ function check(n, c, e) { if (c) { console.log('  ✅ ' + n); pass++; } else { c
   await send('Page.enable', {}, pg);
   await new Promise(r => setTimeout(r, 3000));
 
-  check('页面加载', (await ev(pg, 'document.querySelectorAll(".questionLi").length', false)) === 5);
+  check('页面加载', (await ev(pg, 'document.querySelectorAll(".TiMu").length', false)) === 5);
 
   console.log('\n=== 2. 验证后台截图能力 ===');
   // 找到扩展的 service worker

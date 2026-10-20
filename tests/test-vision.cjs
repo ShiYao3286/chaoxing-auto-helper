@@ -278,9 +278,10 @@ function check(name, cond, extra) {
   // 把题干预先改成乱码，触发不可靠判定
   const dirtyRun = await ev(pg, `(async()=>{
     // 注入混淆字符
-    const p = document.querySelectorAll('.questionLi p');
+    const p = document.querySelectorAll('.TiMu .Zy_TItle');
     const originals = [...p].map(e => e.innerHTML);
-    p[0].innerHTML = '【单选题】忞忖忟命応首要忚忝忛？';
+    p[0].innerHTML = '<i class="fl">1</i><div class="font-cxsecret fontLabel">' +
+            '<span class="newZy_TItle">【单选题】</span>忞忖忟命応首要忚忝忛？</div>';
 
     window.__VISION_CALLS__ = 0; window.__TEXT_CALLS__ = 0;
     window.CS.state.quizDoneSig = '';
@@ -336,7 +337,7 @@ function check(name, cond, extra) {
     window.CS.cfg.quiz.autoSubmit = true;   // 开启自动提交以验证会被跳过
 
     let submitted = false;
-    const btn = document.getElementById('submitBtn');
+    const btn = document.querySelector('a.btnSubmit') || document.getElementById('submitBtn');
     const origClick = btn.click.bind(btn);
     btn.click = () => { submitted = true; origClick(); };
 

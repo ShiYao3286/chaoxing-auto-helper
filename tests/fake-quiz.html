@@ -1,48 +1,212 @@
 <!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><title>学生学习页面</title>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>章节测验</title>
 <style>
 body{font:14px/1.7 "Microsoft YaHei",sans-serif;padding:20px;background:#f6f8fa}
-.questionLi{background:#fff;border:1px solid #ddd;border-radius:8px;padding:14px;margin:12px 0}
-span[class*="num_option"]{display:block;padding:6px 10px;margin:4px 0;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer}
-span.check_answer{background:#e6f7ed;border-color:#2da44e}
-iframe{width:100%;height:60px;border:1px solid #ddd;margin-top:8px}
-button{padding:8px 18px;margin:6px}
+.TiMu{background:#fff;border:1px solid #ddd;border-radius:8px;padding:14px;margin:12px 0}
+.Zy_TItle{margin-bottom:8px}
+.Zy_TItle i{display:inline-block;min-width:22px;font-style:normal;font-weight:700}
+.newZy_TItle{font-weight:600;margin-right:6px}
+.Zy_ulTop{list-style:none;padding:0;margin:8px 0}
+.Zy_ulTop li{padding:6px 10px;margin:4px 0;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;display:flex;gap:8px}
+.num_option,.num_option_dx{display:inline-block;min-width:20px;font-weight:700}
+.check_answer,.check_answer_dx{background:#e6f7ed;border-color:#2da44e}
+.Zy_ulTk{border:1px solid #ddd;border-radius:6px;padding:8px;margin:8px 0}
+.blankItemDiv{margin:6px 0;display:flex;gap:8px;align-items:center}
+.tiankong{font-size:13px;color:#666}
+textarea{width:200px;padding:4px 8px;border:1px solid #ccc;border-radius:4px}
+.btnSubmit,.btnSave{display:inline-block;padding:8px 18px;margin:8px 6px 0 0;border-radius:5px;cursor:pointer;background:#2da44e;color:#fff}
+.btnSave{background:#8a949e}
 </style></head><body>
 <h2>章节测验</h2>
-<div class="questionLi">
-  <p>【单选题】中国革命的首要问题是？</p>
-  <span class="num_option">A 农民问题</span>
-  <span class="num_option">B 分清敌友</span>
-  <span class="num_option">C 土地问题</span>
-  <span class="num_option">D 领导权问题</span>
+
+<!-- ============ 1. 单选题 ============ -->
+<div class="TiMu newTiMu" data="0">
+  <div class="Zy_TItle clearfix">
+    <i class="fl">1</i>
+    <div class="clearfix font-cxsecret fontLabel">
+      <span class="newZy_TItle">【单选题】</span>中国革命的首要问题是？
+    </div>
+  </div>
+  <div class="clearfix">
+    <ul class="Zy_ulTop w-top fl">
+      <li class="font-cxsecret before-after" role="radio" qtype="0" qid="1001" onclick="addChoice(this);">
+        <label class="fl before"><span class="num_option choice1001" data="A">A</span></label>
+        <a class="fl after" href="javascript:void(0);">农民问题</a>
+      </li>
+      <li class="font-cxsecret before-after" role="radio" qtype="0" qid="1001" onclick="addChoice(this);">
+        <label class="fl before"><span class="num_option choice1001" data="B">B</span></label>
+        <a class="fl after" href="javascript:void(0);">分清敌友</a>
+      </li>
+      <li class="font-cxsecret before-after" role="radio" qtype="0" qid="1001" onclick="addChoice(this);">
+        <label class="fl before"><span class="num_option choice1001" data="C">C</span></label>
+        <a class="fl after" href="javascript:void(0);">土地问题</a>
+      </li>
+      <li class="font-cxsecret before-after" role="radio" qtype="0" qid="1001" onclick="addChoice(this);">
+        <label class="fl before"><span class="num_option choice1001" data="D">D</span></label>
+        <a class="fl after" href="javascript:void(0);">领导权问题</a>
+      </li>
+    </ul>
+  </div>
+  <input type="hidden" id="answer1001" name="answer1001" value="">
+  <input type="hidden" id="answertype1001" name="answertype1001" value="0">
 </div>
-<div class="questionLi">
-  <p>【多选题】中国新民主主义革命的对象有哪些？</p>
-  <span class="num_option">A 帝国主义</span>
-  <span class="num_option">B 封建主义</span>
-  <span class="num_option">C 官僚资本主义</span>
-  <span class="num_option">D 民族资本主义</span>
+
+<!-- ============ 2. 多选题 ============ -->
+<div class="TiMu newTiMu" data="1">
+  <div class="Zy_TItle clearfix">
+    <i class="fl">2</i>
+    <div class="clearfix font-cxsecret fontLabel">
+      <span class="newZy_TItle">【多选题】</span>中国新民主主义革命的对象有哪些？
+    </div>
+  </div>
+  <div class="clearfix">
+    <ul class="Zy_ulTop w-top fl">
+      <li class="before-after-checkbox" role="checkbox" qtype="1" qid="1002" onclick="addMultipleChoice(this);">
+        <label class="fl before"><span class="num_option_dx choice1002" data="A">A</span></label>
+        <a class="fl after" href="javascript:void(0);">帝国主义</a>
+      </li>
+      <li class="before-after-checkbox" role="checkbox" qtype="1" qid="1002" onclick="addMultipleChoice(this);">
+        <label class="fl before"><span class="num_option_dx choice1002" data="B">B</span></label>
+        <a class="fl after" href="javascript:void(0);">封建主义</a>
+      </li>
+      <li class="before-after-checkbox" role="checkbox" qtype="1" qid="1002" onclick="addMultipleChoice(this);">
+        <label class="fl before"><span class="num_option_dx choice1002" data="C">C</span></label>
+        <a class="fl after" href="javascript:void(0);">官僚资本主义</a>
+      </li>
+      <li class="before-after-checkbox" role="checkbox" qtype="1" qid="1002" onclick="addMultipleChoice(this);">
+        <label class="fl before"><span class="num_option_dx choice1002" data="D">D</span></label>
+        <a class="fl after" href="javascript:void(0);">民族资本主义</a>
+      </li>
+    </ul>
+  </div>
+  <input type="hidden" id="answer1002" name="answer1002" value="">
+  <input type="hidden" id="answertype1002" name="answertype1002" value="1">
 </div>
-<div class="questionLi">
-  <p>【判断题】封建主义是近代中国贫困落后和一切灾祸的总根源</p>
-  <span class="num_option">A 对</span>
-  <span class="num_option">B 错</span>
+
+<!-- ============ 3. 判断题 ============ -->
+<div class="TiMu newTiMu" data="3">
+  <div class="Zy_TItle clearfix">
+    <i class="fl">3</i>
+    <div class="clearfix font-cxsecret fontLabel">
+      <span class="newZy_TItle">【判断题】</span>封建主义是近代中国贫困落后和一切灾祸的总根源
+    </div>
+  </div>
+  <div class="clearfix">
+    <div class="Py_tk">
+      <ul class="Zy_ulTop w-top fl">
+        <li class="font-cxsecret before-after" role="radio" qtype="3" qid="1003" onclick="addChoice(this);">
+          <label class="fl before"><span class="num_option choice1003" data="true">A</span></label>
+          <a class="fl after" href="javascript:void(0);">对</a>
+        </li>
+        <li class="font-cxsecret before-after" role="radio" qtype="3" qid="1003" onclick="addChoice(this);">
+          <label class="fl before"><span class="num_option choice1003" data="false">B</span></label>
+          <a class="fl after" href="javascript:void(0);">错</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+  <input type="hidden" id="answer1003" name="answer1003" value="">
+  <input type="hidden" id="answertype1003" name="answertype1003" value="3">
 </div>
-<div class="questionLi">
-  <p>【填空题】（）是中国新民主主义革命的首要对象</p>
-  <iframe id="ueditor_0" srcdoc="&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;"></iframe>
+
+<!-- ============ 4. 填空题 ============ -->
+<div class="TiMu newTiMu" data="2">
+  <div class="Zy_TItle clearfix">
+    <i class="fl">4</i>
+    <div class="clearfix font-cxsecret fontLabel">
+      <span class="newZy_TItle">【填空题】</span>（）是中国新民主主义革命的首要对象
+    </div>
+  </div>
+  <div class="clearfix">
+    <ul class="Zy_ulTk">
+      <div class="blankItemDiv">
+        <span class="font14 tiankong fl">第1空：</span>
+        <div class="XztiHover1 fl blankItemInp">
+          <div id="inpDiv1004_1" class="InpDIV" style="display:none;"></div>
+          <div class="textDIV">
+            <textarea name="answerEditor1004_1" id="answerEditor1004_1" style="display:none;"></textarea>
+          </div>
+        </div>
+      </div>
+    </ul>
+  </div>
+  <input type="hidden" name="tiankongsize1004" value="1">
+  <input type="hidden" id="answertype1004" name="answertype1004" value="2">
 </div>
-<div class="questionLi">
-  <p>【判断题】《辛丑条约》的签订使中国丧失了独立自主地位</p>
-  <span class="num_option">A 对</span>
-  <span class="num_option">B 错</span>
+
+<!-- ============ 5. 判断题（第二个） ============ -->
+<div class="TiMu newTiMu" data="3">
+  <div class="Zy_TItle clearfix">
+    <i class="fl">5</i>
+    <div class="clearfix font-cxsecret fontLabel">
+      <span class="newZy_TItle">【判断题】</span>《辛丑条约》的签订使中国丧失了独立自主地位
+    </div>
+  </div>
+  <div class="clearfix">
+    <div class="Py_tk">
+      <ul class="Zy_ulTop w-top fl">
+        <li class="font-cxsecret before-after" role="radio" qtype="3" qid="1005" onclick="addChoice(this);">
+          <label class="fl before"><span class="num_option choice1005" data="true">A</span></label>
+          <a class="fl after" href="javascript:void(0);">对</a>
+        </li>
+        <li class="font-cxsecret before-after" role="radio" qtype="3" qid="1005" onclick="addChoice(this);">
+          <label class="fl before"><span class="num_option choice1005" data="false">B</span></label>
+          <a class="fl after" href="javascript:void(0);">错</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+  <input type="hidden" id="answer1005" name="answer1005" value="">
+  <input type="hidden" id="answertype1005" name="answertype1005" value="3">
 </div>
-<div style="margin-top:20px"><button id="submitBtn">提交</button></div>
+
+<div style="margin-top:20px">
+  <a class="btnSave workBtnIndex" href="javascript:void(0);" onclick="noSubmit();">暂时保存</a>
+  <a class="btnSubmit workBtnIndex" href="javascript:void(0);" onclick="btnBlueSubmit();">提交</a>
+</div>
+
 <script>
 window.__clicked = [];
-document.addEventListener('click', e => {
-  const t = e.target.closest('span[class*=num_option]');
-  if (t) { t.classList.toggle('check_answer'); window.__clicked.push(t.textContent.trim()); }
-}, true);
+window.__submitted = false;
+
+/* 单选：互斥 */
+function addChoice(li) {
+  const qid = li.getAttribute('qid');
+  const span = li.querySelector('.num_option');
+  const wasChecked = /check_answer/.test(span.className);
+  // 清空同题所有选项
+  document.querySelectorAll('li[qid="' + qid + '"] .num_option').forEach(s => {
+    s.classList.remove('check_answer');
+  });
+  if (wasChecked) {
+    document.getElementById('answer' + qid).value = '';
+    window.__clicked.push('uncheck:' + span.getAttribute('data'));
+  } else {
+    span.classList.add('check_answer');
+    document.getElementById('answer' + qid).value = span.getAttribute('data');
+    window.__clicked.push(span.getAttribute('data'));
+  }
+}
+
+/* 多选：可切换，累积字母 */
+function addMultipleChoice(li) {
+  const qid = li.getAttribute('qid');
+  const span = li.querySelector('.num_option_dx');
+  const hidden = document.getElementById('answer' + qid);
+  span.classList.toggle('check_answer_dx');
+
+  const all = [...document.querySelectorAll('li[qid="' + qid + '"] .num_option_dx')];
+  const picked = all.filter(s => /check_answer/.test(s.className)).map(s => s.getAttribute('data')).sort();
+  hidden.value = picked.join('');
+  window.__clicked.push('multi:' + span.getAttribute('data'));
+}
+
+function noSubmit() { window.__submitted = 'save'; }
+
+function btnBlueSubmit() {
+  if (confirm('确定要提交吗？')) {
+    window.__submitted = 'submit';
+  }
+}
 </script>
 </body></html>

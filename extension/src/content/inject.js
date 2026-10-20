@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 学习通自动学习助手 — 内容脚本
  *
  * 架构（重要）：
@@ -57,6 +57,9 @@ if (!window.__CS_BOOTED__) {
     quizDoneSig: '',
     quizRunning: false,
     lastHref: location.href,
+    videoDone: true,        // 视频是否已达完成门槛（90%）
+    videoPercent: 0,        // 视频完成百分比
+    chapterEnterAt: Date.now(),  // 进入本节时间（最低停留用）
     docDone: false,         // 当前文档是否已看完
     docTarget: '',          // 当前滚动的内容区名（调试用）
     docNextAt: 0,           // 下次允许滚动的时间（拟人节流）
@@ -210,13 +213,70 @@ if (!window.__CS_BOOTED__) {
     return false;
   }
 
+  /** 视频完成门槛（页面明示：观看时长需 >= 总时长的 90%） */
+  const VIDEO_THRESHOLD = 0.9;
+
+  /**
+   * 等某个条件成立（轮询）
+   */
+  async function waitFor(fn, timeoutMs, stepMs) {
+    const step = stepMs || 200;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try { if (fn()) return true; } catch { /* ignore */ }
+      await sleep(step);
+    }
+    try { return !!fn(); } catch { return false; }
+  }
+
+  /**
+   * 检测视频任务的完成度
+   *
+   * 实测关键（见 docs/改造计划.md 11.2）：
+   *   - video 的 preload=none，不播放时 duration 一直是 null
+   *   - 调 play() 后约 1 秒内 duration 出现，readyState 从 0 变 4
+   *   - 完成条件是页面明写的：观看时长 >= 总时长的 90%
+   */
+  async function checkVideoTask(v) {
+    const threshold = Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD;
+
+    if (!v) return { state: 'no-video', done: true, waiting: false };
+
+    // 1. 没元数据，先播起来才能读到时长
+    if (!isFinite(v.duration) || v.duration <= 0) {
+      if (v.paused) {
+        try { await v.play(); } catch (e) { log('play() 被拒', e?.message); }
+      }
+      const got = await waitFor(() => isFinite(v.duration) && v.duration > 0, 8000, 300);
+
+      if (!got) {
+        return { state: 'loading', done: false, waiting: true, currentTime: 0, duration: 0, percent: 0 };
+      }
+      log('视频时长已加载: ' + v.duration.toFixed(1) + 's');
+    }
+
+    const dur = v.duration;
+    const cur = v.currentTime;
+    const percent = dur > 0 ? cur / dur : 0;
+    const done = percent >= threshold;
+
+    return {
+      state: done ? 'done' : 'playing',
+      currentTime: cur,
+      duration: dur,
+      percent,
+      done,
+      waiting: !done,
+      threshold
+    };
+  }
+
   async function runVideo() {
     const vids = qAll('video');
     if (!vids.length) return false;
 
     checkLockSignals();
 
-    // 检测到风控页：停止一切操作
     if (state.antispider) {
       setStatus('⚠ 检测到平台验证，已停止。请在页面上完成验证', false);
       state.stopped = true;
@@ -224,17 +284,34 @@ if (!window.__CS_BOOTED__) {
     }
 
     let handled = false;
+    state.videoDone = true;
 
     for (const v of vids) {
       try {
-        if (v.ended) continue;
+        const info = await checkVideoTask(v);
+
+        if (info.state === 'loading') {
+          state.videoDone = false;
+          state.videoPercent = 0;
+          setStatus('⏳ 视频加载中…', true);
+          handled = true;
+          continue;
+        }
+
+        if (info.state === 'done') {
+          state.videoDone = true;
+          state.videoPercent = info.percent || 1;
+          log('视频已达 ' + Math.round((info.percent || 1) * 100) + '%，任务点应已完成');
+          continue;
+        }
+
+        state.videoDone = false;
+        state.videoPercent = info.percent;
 
         if (state.cfg.auto.mute) {
           try { v.muted = true; v.volume = 0; } catch { /* ignore */ }
         }
 
-        // ── 顺序很重要：先让它真的播起来，再谈加速 ──
-        // 反过来容易触发播放器的"异常行为"判定。
         if (v.paused) {
           try { await v.play(); } catch (e) { log('play() 被拒', e?.message); }
 
@@ -246,7 +323,6 @@ if (!window.__CS_BOOTED__) {
           }
         }
 
-        // 播起来了才动倍速
         if (!v.paused && !state.speedGiveUp && !state.speedLocked) {
           const target = Number(state.cfg.auto.rate) || 2;
           await trySetRate(v, target);
@@ -278,174 +354,6 @@ if (!window.__CS_BOOTED__) {
     NODE: '.posCatalog_select',
     NEXT: ['#prevNextFocusNext', '.nextChapter', '.prev_next.next']
   };
-
-  /* ------------------------------------------------------------
-   * 章节内标签切换
-   *
-   * 一个章节常有多个标签：
-   *   1学习要点   ← 纯文字说明，不是任务点
-   *   2微课学习   ← 真正的视频/文档任务点在这里
-   *
-   * 扩展如果停在「学习要点」上滚，滚的是说明文字，
-   * 任务点根本没开始 —— 用户看到的就是"只有目录在动"。
-   * 所以发现当前标签没有任务点、其他标签有，要自动切过去。
-   * ------------------------------------------------------------ */
-
-  /** 列出章节内的标签 */
-  function listChapterTabs() {
-    try {
-      return qAll('li[id^="dct"]').map(li => ({
-        el: li,
-        id: li.id,
-        title: (li.getAttribute('title') || li.textContent || '').trim(),
-        active: /active/.test(li.className || ''),
-        cardId: li.getAttribute('cardid') || ''
-      }));
-    } catch { return []; }
-  }
-
-  /** 当前激活的标签 */
-  function activeTab() {
-    return listChapterTabs().find(t => t.active) || null;
-  }
-
-  /** 切换标签（触发它的 onclick） */
-  function switchToTab(tab) {
-    if (!tab || !tab.el) return false;
-    try {
-      tab.el.click();
-      log('切换标签到「' + tab.title + '」');
-      return true;
-    } catch { return false; }
-  }
-
-  /**
-   * 该标签是不是「内容型」的（可能有任务点）
-   * 学习要点/本章小结/阅读书目 这类是纯文字，不含任务点
-   */
-  function isContentTab(title) {
-    return /微课|视频|案例|拓展|课件|文档|PPT|教材/i.test(title)
-        && !/学习要点|本章小结|阅读书目|讨论|测验/i.test(title);
-  }
-
-  /**
-   * 找下一个待处理的标签
-   *
-   * 逻辑：当前标签不是内容型，或当前标签内容已处理完
-   *      → 切到下一个内容型标签
-   */
-  function findNextContentTab() {
-    const tabs = listChapterTabs();
-    if (tabs.length <= 1) return null;
-
-    const cur = tabs.find(t => t.active);
-    const curIdx = cur ? tabs.indexOf(cur) : -1;
-
-    // 从当前往后找内容型标签
-    for (let i = curIdx + 1; i < tabs.length; i++) {
-      if (isContentTab(tabs[i].title)) return tabs[i];
-    }
-    // 没找到就往回找（可能前面的还没做）
-    for (let i = 0; i < curIdx; i++) {
-      if (isContentTab(tabs[i].title)) return tabs[i];
-    }
-    return null;
-  }
-
-  /**
-   * 确保当前停在「有任务点」的标签上
-   *
-   * 返回 true 表示刚做了切换（本轮循环应该让位）。
-   *
-   * 判断依据：
-   *   · 当前标签是「学习要点」这类纯文字 → 切到内容型标签
-   *   · 当前标签内容已处理完 → 切到下一个内容型标签
-   *   · 没有内容型标签可切 → 不动作
-   */
-  async function ensureContentTab() {
-    try {
-      const tabs = listChapterTabs();
-      if (tabs.length <= 1) return false;
-
-      const cur = tabs.find(t => t.active);
-      if (!cur) return false;
-
-      const curIsContent = isContentTab(cur.title);
-
-      // 情况 1：停在纯文字标签上 → 立刻切到内容型
-      if (!curIsContent) {
-        const next = findNextContentTab();
-        if (next) {
-          setStatus('↪ 切换到「' + next.title + '」', true);
-          if (switchToTab(next)) {
-            await sleep(2500);
-            scrollTicksCleanup();
-            state.docDone = false;
-            state.docNextAt = 0;
-            return true;
-          }
-        }
-        return false;
-      }
-
-      // 情况 2：内容型标签，但内容已看完 → 切下一个
-      if (currentTabFinished()) {
-        const next = findNextContentTab();
-        if (next && next.id !== cur.id) {
-          setStatus('↪ 「' + cur.title + '」已完成，切到「' + next.title + '」', true);
-          if (switchToTab(next)) {
-            await sleep(2500);
-            scrollTicksCleanup();
-            state.docDone = false;
-            state.docNextAt = 0;
-            return true;
-          }
-        }
-      }
-
-      return false;
-    } catch { return false; }
-  }
-  /**
-   * 当前标签的内容是否已经处理完
-   *
-   * 关键点：视频/文档都在**子 iframe** 里，
-   * 顶层文档里 querySelector('video') 查不到，会误判"已完成"。
-   * 所以用「本帧有没有内容」+「子帧状态」综合判断：
-   *   · 顶层：看是否有内容型 iframe，有就认为还没完
-   *   · 子帧：看自己的视频/文档/题目
-   */
-  function currentTabFinished() {
-    try {
-      // ── 本帧自己的内容 ──
-      const v = q1('video');
-      if (v && !v.ended) {
-        if (!isFinite(v.duration) || v.duration <= 0) return false;
-        if (v.currentTime / v.duration < 0.99) return false;
-      }
-
-      if (hasQuiz()) return false;
-
-      const box = findScrollTarget();
-      if (box && !state.docDone) {
-        const maxTop = box.scrollHeight - box.clientHeight;
-        if (box.scrollTop < maxTop - 12) return false;
-      }
-
-      // ── 顶层：有内容型 iframe 就说明还有事 ──
-      if (IS_TOP) {
-        const frames = qAll('iframe');
-        const hasContentFrame = frames.some(f => {
-          const src = (f.src || '');
-          return /knowledge\/cards|ananas\/modules|pan-yz|insertdoc/i.test(src)
-            && f.offsetHeight > 100;
-        });
-        if (hasContentFrame) return false;
-      }
-
-      return true;
-    } catch { return true; }
-  }
 
   /** 当前章节是否还有未完成任务点 */
   function hasPendingTaskPoints() {
@@ -572,56 +480,63 @@ if (!window.__CS_BOOTED__) {
   }
 
   /** 内容区里找滚动目标 */
+  /** 内容区里找滚动目标 */
+  /**
+   * 找当前页面里「真正需要滚动的那个容器」
+   *
+   * 踩过的两个坑：
+   *   1. 按"最大可滚动"选，会选中右侧 #coursetree（目录树，滚高 5000+）
+   *      —— 用户看到的就是目录在动、正文不动
+   *   2. 选中了内层 DIV.main（滚程只有 132px），滚两下就"到底"了，
+   *      而真正的页面滚动条还有 2000+ 没滚 —— 于是永远不翻页、卡住
+   *
+   * 所以：先收集所有候选，再**按滚动行程取最大**，
+   * 保证选中的那个能把整篇文章滚完。
+   */
   function findScrollTarget() {
-    // 1) 明确的学习文档容器（最可靠）
-    const panes = qAll('#panView, .insertdoc-online-pdf, .insertdoc, #docContainer');
-    for (const pane of panes) {
-      try {
-        const cands = [pane, ...pane.querySelectorAll('*')]
-          .filter(el => el && el.scrollHeight > el.clientHeight + 60);
-        if (cands.length) return cands[0];
-      } catch { /* ignore */ }
-    }
+    const cands = [];
 
-    // 2) 学习内容主区域里的可滚动元素
-    //    学习通常见容器：#content、.content、.main、#main、
-    //    .chapter_content、.mark_item 等
-    const MAIN = '#content, .content, #main, .main, .chapter_content, .mark_item, .ans-attach-online';
+    // 1) 明确的学习文档容器（PDF 阅读器内部滚动）
     try {
-      const mains = qAll(MAIN);
-      for (const main of mains) {
-        if (!isContentArea(main)) continue;
-        const cands = [main, ...main.querySelectorAll('*')]
-          .filter(el => {
-            if (!el || !isContentArea(el)) return false;
-            return el.scrollHeight > el.clientHeight + 100 && el.clientHeight > 120;
-          })
-          .sort((a, b) => b.clientHeight - a.clientHeight);
-        if (cands.length) return cands[0];
+      for (const pane of qAll('#panView, .insertdoc-online-pdf, .insertdoc, #docContainer')) {
+        const inner = [pane, ...pane.querySelectorAll('*')]
+          .map(el => ({ el, range: el.scrollHeight - el.clientHeight }))
+          .filter(x => x.range > 80);
+        if (inner.length) {
+          inner.sort((a, b) => b.range - a.range);
+          // 文档容器行程够大就直接用它（最可靠）
+          if (inner[0].range > 200) return inner[0].el;
+          cands.push(inner[0].el);
+        }
       }
     } catch { /* ignore */ }
 
-    // 3) 兜底：大滚动容器，但必须排除 UI 区
+    // 2) 内容型大容器（排除目录/侧栏）
     try {
-      const big = qAll('div, section, article')
-        .filter(el => {
-          if (!isContentArea(el)) return false;
-          const sh = el.scrollHeight, ch = el.clientHeight;
-          return sh > ch + 100 && ch > 200 && el.offsetParent !== null;
-        })
-        .sort((a, b) => {
-          // 优先靠左、靠中的（内容区），目录通常在右侧
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-          return (ra.left - rb.left) || (b.clientHeight - a.clientHeight);
-        });
-      if (big.length) return big[0];
+      for (const el of qAll('div, section, article, main')) {
+        if (!isContentArea(el)) continue;
+        const range = el.scrollHeight - el.clientHeight;
+        if (range > 100 && el.clientHeight > 120 && el.offsetParent !== null) {
+          cands.push(el);
+        }
+      }
     } catch { /* ignore */ }
 
-    // 4) 整个文档
+    // 3) 整个文档（页面级滚动）—— 大多数章节页真正的滚动条
     const se = document.scrollingElement || document.documentElement;
-    if (se && se.scrollHeight > se.clientHeight + 40) return se;
+    if (se && se.scrollHeight > se.clientHeight + 40) cands.push(se);
 
-    return null;
+    if (!cands.length) return null;
+
+    // 关键：取滚动行程最大的那个 —— 它能覆盖整篇内容
+    let best = cands[0], bestScore = -1;
+    for (const el of cands) {
+      const range = el.scrollHeight - el.clientHeight;
+      // 文档滚动条略微加权，确保整页能滚完
+      const score = (el === se) ? range * 1.2 : range;
+      if (score > bestScore) { bestScore = score; best = el; }
+    }
+    return best;
   }
 
   /** 当前正在滚的是不是内容区（用于状态提示） */
@@ -650,6 +565,16 @@ if (!window.__CS_BOOTED__) {
 
     const maxTop = box.scrollHeight - box.clientHeight;
     const cur = box.scrollTop;
+
+    // 异常保护：学习通偶尔有页面被撑到几万像素（整章内容平铺、
+    // 或页面状态异常）。这种情况不该傻滚 9 万像素，
+    // 超过阈值就当这页没实质内容，交给翻页逻辑。
+    const MAX_SANE_SCROLL = 20000;
+    if (maxTop > MAX_SANE_SCROLL) {
+      log('滚动范围异常大（' + maxTop + 'px），跳过滚动直接翻页');
+      state.docDone = true;
+      return false;
+    }
 
     // 已经到底
     if (cur >= maxTop - 12) {
@@ -720,11 +645,38 @@ if (!window.__CS_BOOTED__) {
    * ============================================================ */
 
   /** 本文档里是否有题目 */
+  /**
+   * 页面上有没有题目
+   *
+   * 实测：学习通测验页的容器是 .TiMu（不是 .questionLi）
+   * 位置：mooc-ans/work/doHomeWorkNew 帧内
+   */
   function hasQuiz() {
-    return !!q1('.questionLi');
+    // 按可靠性排优先级
+    const sels = ['.TiMu', '.questionLi', '.mark_item'];
+    for (const s of sels) {
+      if (qAll(s).length > 0) return true;
+    }
+    return false;
   }
 
-  function judgeType(text) {
+  /** 判题型（优先看 DOM 属性，比文字可靠） */
+  function judgeType(text, qEl) {
+    // ① 先看 qtype 属性（实测：0单选 1多选 2填空 3判断）
+    if (qEl) {
+      const firstLi = qEl.querySelector('.Zy_ulTop li');
+      const qtype = firstLi?.getAttribute('qtype');
+      if (qtype === '1') return 'multi';
+      if (qtype === '0') return 'single';
+      if (qtype === '3') return 'judge';
+      // 填空题没有 li，看 tiankongsize 隐藏域
+      if (qEl.querySelector('input[name^="tiankongsize"]') ||
+          qEl.querySelector('textarea[name^="answerEditor"]')) {
+        return 'fill';
+      }
+    }
+
+    // ② 退化到文字判断
     if (/【单选题】|单选题/.test(text)) return 'single';
     if (/【多选题】|多选题/.test(text)) return 'multi';
     if (/【判断题】|判断题/.test(text)) return 'judge';
@@ -732,161 +684,315 @@ if (!window.__CS_BOOTED__) {
     return 'unknown';
   }
 
-  /** 抓题（含字体解码） */
+  /**
+   * 抓取题目（含字体解码）
+   *
+   * 实测结构（docs/改造计划.md 11.7 / 11.8 / 11.9）：
+   *
+   *   <div class="TiMu newTiMu" data="1">
+   *     <div class="Zy_TItle clearfix">
+   *       <i class="fl">1</i>
+   *       <div class="font-cxsecret fontLabel">
+   *         <span class="newZy_TItle">【多选题】</span>题干文字
+   *       </div>
+   *     </div>
+   *     <ul class="Zy_ulTop">
+   *       <li role="checkbox" qid="405881807" qtype="1" onclick="addMultipleChoice(this);">
+   *         <span class="num_option_dx" data="A">A</span>
+   *         <a class="after">选项文字</a>
+   *       </li>
+   *     </ul>
+   *   </div>
+   *
+   * 三种题型的 span class：
+   *   多选 → .num_option_dx
+   *   单选/判断 → .num_option
+   *   判断的 data 是 "true"/"false"，选项文字是「对/错」
+   */
   async function scrapeQuiz() {
-    if (!window.CSFontDecoder) {
-      // 字体解码器没加载时退化为直接读文本
-      log('CFSFontDecoder 未加载，跳过字体解码');
-    }
-
-    const boxes = qAll('.questionLi');
+    const boxes = qAll('.TiMu');
     if (!boxes.length) return { ok: false, reason: '本文档无题目' };
 
     const questions = [];
 
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
-      const rawText = (b.innerText || '').replace(/\s+/g, ' ').trim();
-      const type = judgeType(rawText);
 
-      // 选项
-      const opts = [];
-      for (const o of [...b.querySelectorAll('span[class*="num_option"], .answerList dd, .option')]) {
-        const txt = (o.innerText || '').replace(/\s+/g, ' ').trim();
-        if (!txt) continue;
-        const letter = txt.charAt(0).toUpperCase();
-        if (!/^[A-Z]$/.test(letter)) continue;
-        opts.push({ letter, text: txt.slice(1).trim(), el: o });
+      // ── 题号 ──
+      const numEl = b.querySelector('.Zy_TItle > i');
+      const num = (numEl?.innerText || '').trim() || String(i + 1);
+
+      // ── 题干（可能带反爬字体）──
+      const titleEl = b.querySelector('.Zy_TItle .font-cxsecret')
+                   || b.querySelector('.Zy_TItle .fontLabel')
+                   || b.querySelector('.Zy_TItle');
+
+      // 去掉题型标签后的纯题干
+      let rawTitle = (titleEl?.innerText || '').replace(/\s+/g, ' ').trim();
+      const typeText = (b.querySelector('.newZy_TItle')?.innerText || '').trim();
+
+      // ── 题型 ──
+      const type = judgeType(typeText + ' ' + rawTitle, b);
+
+      // ── 题目标识 ──
+      const firstLi = b.querySelector('.Zy_ulTop li');
+      const qid = firstLi?.getAttribute('qid')
+               || b.querySelector('input[id^="answertype"]')?.id?.replace('answertype', '')
+               || '';
+
+      // ── 选项（三种题型选择器不同）──
+      const spanSel = type === 'multi' ? '.num_option_dx' : '.num_option';
+      const options = [];
+      for (const li of b.querySelectorAll('.Zy_ulTop li')) {
+        const span = li.querySelector(spanSel) || li.querySelector('.num_option_dx') || li.querySelector('.num_option');
+        const val = span?.getAttribute('data') || '';
+        const letter = (span?.innerText || '').trim();
+        const txt = (li.querySelector('a.after')?.innerText || '').replace(/\s+/g, ' ').trim();
+        options.push({
+          value: val,          // 选择题 A/B/C/D；判断题 true/false
+          letter: letter,      // 显示的字母
+          text: txt,           // 选项文字（可能反爬）
+          qid: li.getAttribute('qid'),
+          checked: /check_answer/.test((span?.className || '').toString()),
+          el: li
+        });
       }
 
-      // 判断题：A 对 / B 错
-      if (type === 'judge' && !opts.length) {
-        const radios = [...b.querySelectorAll('input[type=radio], .radio, label')];
-        const txts = radios.map(r => (r.innerText || r.value || '').trim()).filter(Boolean);
-        if (txts.includes('对') || txts.includes('错')) {
-          opts.push({ letter: 'A', text: '对', el: radios[0] });
-          opts.push({ letter: 'B', text: '错', el: radios[1] });
-        }
-      }
-
-      // 填空
-      const fillFrames = [...b.querySelectorAll('iframe[id^="ueditor_"]')];
-
-      // ---- 字体反爬解码 ----
-      let realText = rawText;
-      let decodeInfo = null;
-      if (window.CSFontDecoder) {
-        try {
-          const probe = b.querySelector('p, .stem, .mark_name') || b;
-          const r = await window.CSFontDecoder.decode(rawText, probe);
-          if (r.map && Object.keys(r.map).length) {
-            realText = r.text;
-            decodeInfo = { font: r.font, avg: r.avgScore, low: r.lowConfidence };
-          }
-        } catch (e) { log('字体解码失败', e?.message); }
-      }
-
-      // 去掉题号、题型标签，留纯题干
-      let stem = realText
-        .replace(/【.+?题】/, '')
-        .replace(/^[\s\d]+[.、．]?\s*/, '')
-        .trim();
-
-      // 关键：innerText 会把选项文字也拼进题干。
-      // 逐个把选项文本从题干里剔除，否则提示词会被选项污染，
-      // 模型可能误把某个选项当成题干的一部分。
-      for (const o of opts) {
-        const variants = [
-          o.letter + ' ' + o.text,
-          o.letter + o.text,
-          o.letter + '、' + o.text,
-          o.text
-        ];
-        for (const v of variants) {
-          if (v && v.length > 1) stem = stem.split(v).join(' ');
-        }
-      }
-      stem = stem.replace(/\s+/g, ' ').trim();
-      if (!stem) stem = realText;   // 兜底：剔除过度时用原文
+      // ── 填空题的输入区 ──
+      const fillAreas = [...b.querySelectorAll('textarea[name^="answerEditor"]')];
+      const blankCount = +(b.querySelector('input[name^="tiankongsize"]')?.value || 0);
 
       questions.push({
-        num: i + 1,
+        index: i + 1,
+        num,
         type,
-        text: stem,
-        options: opts.map(o => `${o.letter} ${o.text}`),
-        _box: b,
-        _opts: opts,
-        _fill: fillFrames
+        qtype: firstLi?.getAttribute('qtype') || '',
+        qid,
+        title: rawTitle,
+        typeText,
+        options,
+        fillAreas,
+        blankCount,
+        el: b,
+        // 收集所有需要解码的文本节点
+        textEls: [titleEl, ...b.querySelectorAll('.Zy_ulTop a.after')].filter(Boolean)
       });
     }
 
-    return { ok: true, questions };
+    // ── 字体解码 ──
+    if (window.CSFontDecoder && typeof window.CSFontDecoder.decodeMany === 'function') {
+      try {
+        const allTexts = [];
+        for (const q of questions) {
+          allTexts.push(q.title);
+          for (const o of q.options) allTexts.push(o.text);
+        }
+        const decoded = await window.CSFontDecoder.decodeMany(allTexts);
+        if (decoded && decoded.length === allTexts.length) {
+          const pick = (r) => {
+            // decodeMany 返回的是对象数组 { ok, text, map, changed, ... }
+            if (!r) return '';
+            if (typeof r === 'string') return r;
+            if (typeof r.text === 'string') return r.text;
+            return '';
+          };
+          let k = 0;
+          for (const q of questions) {
+            q.rawTitle = q.title;
+            const dt = pick(decoded[k++]);
+            if (dt) q.title = dt;
+            for (const o of q.options) {
+              o.rawText = o.text;
+              const d = pick(decoded[k++]);
+              if (d) o.text = d;
+            }
+          }
+          log('字体解码完成，共 ' + allTexts.length + ' 段文本');
+        }
+      } catch (e) {
+        log('字体解码失败，使用原始文本', e?.message);
+      }
+    } else {
+      log('CFSFontDecoder 未加载，跳过字体解码');
+    }
+
+    // ── 可信度评估 ──
+    const assess = assessTextReliability({ questions });
+
+    return {
+      ok: true,
+      questions,
+      reliable: assess.reliable,
+      garbledRatio: assess.garbledRatio || 0,
+      reason: assess.reason || ''
+    };
   }
 
-  /** 填充答案 */
+  /**
+   * 填充答案（按实测结构，三种题型分别处理）
+   *
+   * 实测要点（docs/改造计划.md 11.7 / 11.8）：
+   *   · 多选题 span class = num_option_dx，data = A/B/C/D
+   *   · 单选/判断 span class = num_option
+   *   · 判断题 data = "true" / "false"，选项文字是「对/错」
+   *   · 填空题是 UEditor，答案写 textarea[name^=answerEditor]
+   *   · **必须用 .click()**，否则 answer<qid> 隐藏域不更新，提交会报未作答
+   */
   async function fillAnswers(questions, answers) {
     const byNum = new Map();
     for (const a of answers || []) {
-      if (a && a.num != null) byNum.set(Number(a.num), a);
+      if (a && a.num != null) byNum.set(String(a.num).trim(), a);
+      if (a && a.index != null) byNum.set(String(a.index).trim(), a);
     }
 
     const report = [];
 
     for (const q of questions) {
-      const ans = byNum.get(q.num);
-      if (!ans) { report.push({ num: q.num, ok: false, reason: 'API 未返回此题的答案' }); continue; }
+      // 按题号匹配；匹配不到就按顺序
+      let ans = byNum.get(String(q.num).trim());
+      if (!ans) ans = byNum.get(String(q.index).trim());
+
+      if (!ans) {
+        report.push({ num: q.num, ok: false, reason: 'API 未返回本题答案', type: q.type });
+        continue;
+      }
 
       let vals = Array.isArray(ans.answer) ? ans.answer : [ans.answer];
-      vals = vals.filter(v => v != null && String(v).trim() !== '')
-        .map(v => String(v).trim());
+      vals = vals.filter(v => v != null && String(v).trim() !== '').map(v => String(v).trim());
 
       try {
+        /* ============ 选择题 / 判断题 ============ */
         if (q.type === 'single' || q.type === 'multi' || q.type === 'judge') {
-          let letters = vals.map(v => v.toUpperCase());
-
+          // 目标值列表
+          let wants;
           if (q.type === 'judge') {
-            letters = letters.map(L => {
-              if (/^(对|正确|TRUE|T|A|√)$/.test(L)) return 'A';
-              if (/^(错|错误|FALSE|F|B|×)$/.test(L)) return 'B';
-              return L;
+            // 判断题：把「对/错/正确/错误/true/false」统一成 true/false
+            wants = vals.map(v => {
+              const s = v.toUpperCase();
+              if (/^(对|正确|TRUE|T|A|√|是)$/.test(s) || /^(对|正确)$/.test(v)) return 'true';
+              if (/^(错|错误|FALSE|F|B|×|否)$/.test(s) || /^(错|错误)$/.test(v)) return 'false';
+              if (s === 'TRUE' || s === 'FALSE') return s.toLowerCase();
+              return s.toLowerCase();
             });
+          } else {
+            // 选择题：取字母
+            wants = vals.map(v => {
+              const s = String(v).trim();
+              // 可能是 "A" 或 "A、B" 或 "AB"
+              const letters = s.toUpperCase().match(/[A-Z]/g);
+              return letters ? letters.join('') : s.toUpperCase();
+            }).join('');
+            // 拆成单字母数组
+            wants = wants.split('');
           }
 
+          // ── 先清空已选中的选项 ──
+          // 实测：多选、单选、判断题**点两次都会取消选中**。
+          // 所以不能"已选中就跳过"，必须先清空再点目标，
+          // 否则会出现"本该选中 A，点一下反而取消了"。
+          for (const o of q.options) {
+            if (!o.checked) continue;
+            try {
+              o.el.click();
+              await sleep(80);
+            } catch { /* ignore */ }
+          }
+
+          // ── 再点目标选项 ──
           let clicked = 0;
-          for (const L of letters) {
-            const opt = q._opts.find(o => o.letter === L);
-            if (!opt) continue;
-            const already = /check_answer|checked|active|selected/i.test(opt.el.className || '');
-            if (!already) {
-              try { opt.el.click(); } catch { /* ignore */ }
-            }
-            clicked++;
-          }
-          report.push({ num: q.num, ok: clicked > 0, type: q.type, filled: letters.join('') });
 
-        } else if (q.type === 'fill') {
-          let n = 0;
-          for (let k = 0; k < q._fill.length && k < vals.length; k++) {
-            const f = q._fill[k];
-            let d = null;
-            try { d = f.contentDocument || f.contentWindow.document; } catch { d = null; }
-            if (!d || !d.body) continue;
-            d.body.innerHTML = '<p>' + vals[k] + '</p>';
-            const win = d.defaultView || window;
-            d.body.dispatchEvent(new win.Event('input', { bubbles: true }));
-            d.body.dispatchEvent(new win.Event('keyup', { bubbles: true }));
-            n++;
+          for (const want of wants) {
+            const target = q.options.find(o => {
+              const ov = String(o.value || '').toLowerCase();
+              const ol = String(o.letter || '').toUpperCase();
+              return ov === String(want).toLowerCase() || ol === String(want).toUpperCase();
+            });
+
+            if (!target) {
+              log('找不到选项: ' + want);
+              continue;
+            }
+
+            try {
+              target.el.click();
+              clicked++;
+              await sleep(100);
+            } catch (e) {
+              log('点击选项失败', e?.message);
+            }
           }
-          report.push({ num: q.num, ok: n > 0, type: 'fill', filled: n, need: q._fill.length });
+
+          // ── 校验隐藏域 ──
+          const hiddenAns = q.qid ? document.getElementById('answer' + q.qid) : null;
+          const gotValue = hiddenAns ? hiddenAns.value : '(无隐藏域)';
+          const expected = q.type === 'judge' ? wants[0] : wants.join('');
+          if (hiddenAns && gotValue !== expected) {
+            log('填答校验不符: 期望 ' + expected + '，实际 ' + gotValue);
+          }
+          const alreadyOk = 0;
+
+          report.push({
+            num: q.num,
+            ok: clicked > 0,
+            type: q.type,
+            filled: wants.join(''),
+            alreadyOk,
+            total: q.options.length
+          });
+
+        /* ============ 填空题 ============ */
+        } else if (q.type === 'fill') {
+          let filled = 0;
+
+          // 方式 A：UEditor 的 textarea（实测 window.UE 不存在，直接写 value）
+          const areas = q.fillAreas || [];
+          for (let k = 0; k < areas.length && k < vals.length; k++) {
+            const ta = areas[k];
+            if (!ta) continue;
+            try {
+              ta.value = vals[k];
+              ta.dispatchEvent(new Event('input', { bubbles: true }));
+              ta.dispatchEvent(new Event('change', { bubbles: true }));
+              filled++;
+            } catch (e) {
+              log('填 textarea 失败', e?.message);
+            }
+          }
+
+          // 方式 B：如果 UEditor 的 iframe body 存在，也写一份（双保险）
+          try {
+            const editorIframes = q.el.querySelectorAll('.edui-editor iframe');
+            for (let k = 0; k < editorIframes.length && k < vals.length; k++) {
+              const fr = editorIframes[k];
+              let d = null;
+              try { d = fr.contentDocument || fr.contentWindow.document; } catch { d = null; }
+              if (!d || !d.body) continue;
+              d.body.innerHTML = '<p>' + vals[k] + '</p>';
+              const win = d.defaultView || window;
+              d.body.dispatchEvent(new win.Event('input', { bubbles: true }));
+              d.body.dispatchEvent(new win.Event('keyup', { bubbles: true }));
+            }
+          } catch { /* ignore */ }
+
+          report.push({
+            num: q.num,
+            ok: filled > 0,
+            type: 'fill',
+            filled,
+            need: vals.length
+          });
 
         } else {
-          report.push({ num: q.num, ok: false, reason: '无法识别题型' });
+          report.push({ num: q.num, ok: false, reason: '无法识别题型: ' + q.type });
         }
       } catch (e) {
         report.push({ num: q.num, ok: false, reason: e?.message });
       }
     }
 
+    // 统计
+    const okCount = report.filter(r => r.ok).length;
+    log('填答完成: ' + okCount + '/' + report.length);
     return report;
   }
 
@@ -909,7 +1015,8 @@ if (!window.__CS_BOOTED__) {
    *   这个降级方案在字体解码失败时依然有效。
    */
   async function captureQuizImage() {
-    const boxes = qAll('.questionLi');
+    // 实测：学习通题目容器是 .TiMu（不是 .questionLi）
+    const boxes = qAll('.TiMu').length ? qAll('.TiMu') : qAll('.questionLi');
     if (!boxes.length) throw new Error('没有题目区域可截图');
 
     const maxShots = Math.max(1, Math.min(6, (state.cfg.vision && state.cfg.vision.maxShots) || 3));
@@ -1080,21 +1187,27 @@ if (!window.__CS_BOOTED__) {
     }
 
     // 2. 题干异常：过短、含大量生僻字、疑似仍是假字
+    // 2. 题干异常：过短、含大量生僻字、疑似仍是假字
     for (const q of scraped.questions) {
-      if (!q.text || q.text.length < 4) {
+      // 类型保护：title 可能是任意类型，先转成字符串
+      let txt = q.title != null ? q.title : (q.text != null ? q.text : '');
+      if (typeof txt !== 'string') {
+        try { txt = String(txt); } catch { txt = ''; }
+      }
+      if (!txt || txt.length < 4) {
         reasons.push('第' + q.num + '题题干过短');
         continue;
       }
       // 生僻字比例：U+3400-4DBF、U+9FA6-9FFF 等少见区间
-      const rare = [...q.text].filter(ch => {
+      const rare = [...txt].filter(ch => {
         const c = ch.codePointAt(0);
         return (c >= 0x3400 && c <= 0x4dbf) || (c >= 0x9fa6 && c <= 0x9fff);
       }).length;
-      if (rare / q.text.length > 0.15) {
+      if (rare / txt.length > 0.15) {
         reasons.push('第' + q.num + '题疑似仍有乱码');
       }
       // 明显没被替换掉的假字
-      if (/[忞忖忟応忚忝忛忢忲忰忱]/.test(q.text)) {
+      if (/[忞忖忟応忚忝忛忢忲忰忱]/.test(txt)) {
         reasons.push('第' + q.num + '题仍含混淆字符');
       }
     }
@@ -1164,7 +1277,7 @@ if (!window.__CS_BOOTED__) {
     const scraped = await scrapeQuiz();
     if (!scraped.ok) return false;
 
-    const sig = scraped.questions.map(q => q.text.slice(0, 40)).join('|');
+    const sig = scraped.questions.map(q => (q.title || '').slice(0, 40)).join('|');
     if (sig && sig === state.quizDoneSig) return true;
 
     state.quizRunning = true;
@@ -1212,7 +1325,7 @@ if (!window.__CS_BOOTED__) {
       // ===== 文本流程 =====
       if (!answers) {
         const payload = scraped.questions.map(q => ({
-          num: q.num, type: q.type, text: q.text, options: q.options
+          num: q.num, type: q.type, text: q.title || '', options: q.options.map(o => ({ letter: o.letter, text: o.text, value: o.value }))
         }));
 
         let resp;
@@ -1247,8 +1360,17 @@ if (!window.__CS_BOOTED__) {
 
           // ===== 模型侧判断：答得有没有把握 =====
           // 文本答题不带 confidence，但可以看模型是否漏题
-          const answeredNums = new Set(answers.map(a => Number(a.num)));
-          const missing = scraped.questions.filter(q => !answeredNums.has(q.num));
+          // 注意：q.num 可能是字符串（题目序号文字），API 返回的是数字，
+          // 必须统一转成 Number 再比，否则会把答过的题误判为漏答，
+          // 白白多截一次图（用户看到"文本成功了还在截图"）。
+          const answeredNums = new Set(
+            answers.map(a => Number(a.num)).filter(n => isFinite(n))
+          );
+          const missing = scraped.questions.filter(q => {
+            const qn = Number(q.num);
+            if (isFinite(qn)) return !answeredNums.has(qn);
+            return !answers.some(a => String(a.num) === String(q.num));
+          });
 
           if (missing.length && visionOn) {
             setStatus('⚠ 模型漏答 ' + missing.length + ' 题，补一次截图…', true);
@@ -1302,14 +1424,30 @@ if (!window.__CS_BOOTED__) {
         !(visionMeta && visionMeta.uncertain);
 
       if (canSubmit) {
-        const btn = qAll('button, a, input[type=button], input[type=submit]')
-          .find(b => /^\s*提\s*交\s*$/.test((b.innerText || b.value || '').trim()));
+        // 实测提交按钮：<a class="btnSubmit workBtnIndex" onclick="btnBlueSubmit();">提交</a>
+        const btn = q1('a.btnSubmit') || q1('.btnSubmit')
+                 || qAll('a, button, input[type=button]')
+                      .find(b => /^\s*提\s*交\s*$/.test((b.innerText || b.value || '').trim()));
         if (btn) {
           await sleep(800);
-          try { btn.click(); setStatus('📤 已提交', false); } catch { /* ignore */ }
+          try {
+            btn.click();
+            setStatus('📤 已提交', false);
+            await sleep(1500);
+            const confirmBtn = qAll('a, button')
+              .find(b => /^(确定|确认|是)$/.test((b.innerText || '').trim())
+                      && b.offsetParent !== null);
+            if (confirmBtn) {
+              try { confirmBtn.click(); } catch { /* ignore */ }
+            }
+          } catch (e) { log('提交失败', e?.message); }
+        } else {
+          setStatus(statusText + ' · 未找到提交按钮', false);
         }
       } else if (state.cfg.quiz.autoSubmit && visionMeta && visionMeta.uncertain) {
         setStatus(statusText + ' · 因不确定未自动提交', false);
+      } else if (!state.cfg.quiz.autoSubmit) {
+        setStatus(statusText + ' · 未自动提交（请检查后手动提交）', false);
       }
 
       return true;
@@ -1374,17 +1512,364 @@ if (!window.__CS_BOOTED__) {
    * 用于判断「能不能直接跳下一节」，
    * 避免在没完成时跑掉（学习通会弹「还有任务点未完成」的确认框）。
    */
+  /**
+   * 解析 #_studystate（学习通自己的学习状态）
+   *
+   * 实测格式：value="{nextChapterId:1210130560,unfinishCount:93}"
+   * 注意：键没有引号，不是合法 JSON，不能用 JSON.parse，只能正则提取。
+   */
+  function readStudyState() {
+    try {
+      const el = document.getElementById('_studystate');
+      if (!el || !el.value) return null;
+      const raw = el.value;
+      const mNext = raw.match(/nextChapterId\s*:\s*(\d+)/);
+      const mUnfinish = raw.match(/unfinishCount\s*:\s*(\d+)/);
+      return {
+        raw,
+        nextChapterId: mNext ? mNext[1] : null,
+        unfinishCount: mUnfinish ? +mUnfinish[1] : null
+      };
+    } catch { return null; }
+  }
+
+  /** 当前页面的 chapterId */
+  function currentChapterId() {
+    try {
+      const m = location.href.match(/chapterId=(\d+)/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+
+  /** 取当前激活的课程树节点 */
+  function currentNode() {
+    try {
+      return q1('.posCatalog_select.posCatalog_active')
+          || q1('.posCatalog_select[class*="active"]')
+          || q1('.posCatalog_select[class*="current"]');
+    } catch { return null; }
+  }
+
+  /* ------------------------------------------------------------
+   * 章节内标签切换
+   *
+   * 学习通一个章节常有多个标签：
+   *   1学习要点   ← 纯文字说明，不是任务点
+   *   2微课学习   ← 真正的视频任务点在这里
+   *
+   * 用户策略（方案 B）：任务点在别的标签时，自动切过去做完再翻页。
+   * 只切「确实承载任务点」的标签，不瞎切。
+   * ------------------------------------------------------------ */
+
+  /** 列出本章节的所有标签 */
+  function listChapterTabs() {
+    try {
+      return qAll('li[id^="dct"]').map(li => ({
+        el: li,
+        id: li.id,
+        title: (li.getAttribute('title') || li.textContent || '').trim(),
+        active: /active/.test(li.className || ''),
+        cardId: li.getAttribute('cardid') || ''
+      }));
+    } catch { return []; }
+  }
+
+  /** 当前激活的标签 */
+  function activeChapterTab() {
+    return listChapterTabs().find(t => t.active) || null;
+  }
+
+  /**
+   * 判断某个标签是不是「内容型」（可能承载任务点）
+   *
+   * 学习要点 / 本章小结 / 阅读书目 这类是纯文字，不是任务点
+   */
+  function isContentTab(title) {
+    if (!title) return false;
+    if (/学习要点|本章小结|阅读书目|讨论|笔记|标注/i.test(title)) return false;
+    return /微课|视频|案例|拓展|课件|文档|PPT|教材|测验|作业/i.test(title);
+  }
+
+  /** 切换标签 */
+  function switchToTab(tab) {
+    if (!tab || !tab.el) return false;
+    try {
+      tab.el.click();
+      log('切换标签到「' + tab.title + '」');
+      return true;
+    } catch (e) {
+      log('切换标签失败', e?.message);
+      return false;
+    }
+  }
+
+  /**
+   * 说明当前章节的任务点在哪个标签页
+   *
+   * 用于「本页干不了活」时给用户明确指引。
+   */
+  function describeWhereTaskPointIs() {
+    try {
+      const tabs = listChapterTabs();
+      if (!tabs.length) return '';
+
+      const cur = tabs.find(t => t.active);
+      const curTitle = cur ? cur.title : '';
+
+      for (const t of tabs) {
+        if (t === cur) continue;
+        if (isContentTab(t.title)) return t.title;
+      }
+      return curTitle;
+    } catch { return ''; }
+  }
+
+  /**
+   * 找下一个该去做的内容型标签
+   *
+   * @param {boolean} includeSelf 是否允许返回当前标签
+   * @returns 标签对象 或 null
+   */
+  function findNextContentTab(includeSelf) {
+    const tabs = listChapterTabs();
+    if (tabs.length <= 1) return null;
+
+    const curIdx = tabs.findIndex(t => t.active);
+
+    // 当前就是内容型，且允许含自己 → 不用切
+    if (includeSelf && curIdx >= 0 && isContentTab(tabs[curIdx].title)) return null;
+
+    // 从当前位置往后找
+    for (let i = curIdx + 1; i < tabs.length; i++) {
+      if (isContentTab(tabs[i].title)) return tabs[i];
+    }
+    // 往回找
+    for (let i = 0; i < curIdx; i++) {
+      if (isContentTab(tabs[i].title)) return tabs[i];
+    }
+    return null;
+  }
+
+  /**
+   * 当前标签的内容是否已经做完
+   *
+   * 注意：视频/题目可能在子 iframe 里，本帧查询不到，
+   * 所以「本帧没内容」不能直接判定为做完，要保守返回 false。
+   */
+  function currentTabContentDone() {
+    try {
+      // 有视频没播完
+      const v = q1('video');
+      if (v) {
+        if (!isFinite(v.duration) || v.duration <= 0) return false;   // 时长没出来 → 没做完
+        const th = Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD;
+        if (v.currentTime / v.duration < th) return false;
+      }
+
+      // 有题目没做
+      if (hasQuiz()) return false;
+
+      // 有文档没滚到底
+      if (!state.docDone && findScrollTarget()) return false;
+
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 读平台的「视频任务点」完成状态
+   *
+   * 实测结构（学习通真实页面）：
+   *
+   *   已完成：
+   *     <div class="ans-attach-ct videoContainer ans-job-finished">
+   *       <div class="ans-job-icon ans-job-video ans-job-icon-clear"
+   *            aria-label="任务点已完成">
+   *
+   *   未完成：
+   *     <div class="ans-job-icon " aria-label="任务点未完成"></div>
+   *
+   * 优先读 aria-label（最直接），再退到 class 判断。
+   *
+   * @returns {{ done:boolean, source:string } | null}  null = 本页没有视频任务点
+   */
+  function readVideoTaskState() {
+    try {
+      // ① aria-label 最可靠
+      const icons = qAll('[class*="ans-job-icon"]');
+      for (const el of icons) {
+        const aria = el.getAttribute('aria-label') || '';
+        if (/任务点已完成/.test(aria)) {
+          return { done: true, source: 'aria-label' };
+        }
+        if (/任务点未完成/.test(aria)) {
+          // 继续找，可能还有别的（一页多个视频）
+          continue;
+        }
+      }
+
+      // ② 容器带 ans-job-finished
+      const finished = qAll('.ans-job-finished');
+      if (finished.length) {
+        return { done: true, source: 'ans-job-finished' };
+      }
+
+      // ③ 有 ans-job-icon 且明确说未完成
+      let hasIcon = false;
+      for (const el of icons) {
+        const aria = el.getAttribute('aria-label') || '';
+        if (/任务点未完成/.test(aria)) hasIcon = true;
+      }
+      if (hasIcon) {
+        return { done: false, source: 'aria-label-todo' };
+      }
+
+      // ④ 有视频图标但没明确标记 → 按 class 推断
+      const videoIcons = qAll('.ans-job-icon.ans-job-video');
+      if (videoIcons.length) {
+        // 有 video 但没有 finished 标记 → 未完成
+        return { done: false, source: 'icon-no-finished' };
+      }
+
+      return null;   // 本页没有视频任务点
+    } catch { return null; }
+  }
+
+  /**
+   * 检测平台是否限制了任务点（每日上限）
+   *
+   * 实测文案：
+   *   今日视频任务点完成数已达上限，您可以观看视频，但无法完成任务点
+   *   今日视频观看时长已达上限，您可继续观看视频，但无法完成任务点
+   *
+   * 命中时应该停止刷课，否则纯属浪费时间和账号风险。
+   */
+  function detectDailyLimit() {
+    try {
+      const txt = (document.body?.innerText || '').slice(0, 5000);
+      if (/今日视频任务点完成数已达上限|今日视频观看时长已达上限/.test(txt)) {
+        return { limited: true, reason: '今日视频任务点已达上限' };
+      }
+      // 有些版本提示文案不同
+      if (/已达上限.{0,20}无法完成任务点/.test(txt)) {
+        return { limited: true, reason: '今日任务点已达上限' };
+      }
+      return { limited: false };
+    } catch { return { limited: false }; }
+  }
+
+  /**
+   * 任务点四级校验（实测确认，见 docs/改造计划.md 11.4 / 11.6）
+   *
+   *   ① #_studystate 全局状态  —— 学习通自己维护的，最权威
+   *   ② 当前树节点             —— .icon_Completed + .jobUnfinishCount
+   *   ③ #jobhint               —— 本节课待完成计数
+   *   ④ 视频实时进度            —— currentTime / duration >= 90%
+   *
+   * @returns {{ done:boolean, reason?:string, level?:string, ...extra }}
+   */
   function isCurrentChapterDone() {
     try {
-      const stats = getTaskPointStats();
-      if (stats.allDone) return true;
+      const curChapter = currentChapterId();
 
-      // 页面上有「任务点已完成」标记
-      const txt = (document.body?.innerText || '').slice(0, 3000);
-      if (/任务点已完成/.test(txt) && !/待完成任务点/.test(txt)) return true;
+      // ── ① 全局状态 ──
+      const ss = readStudyState();
+      if (ss && curChapter) {
+        // 整个课程都完成了
+        if (ss.unfinishCount === 0) {
+          return { done: true, level: 'studystate', allCourseDone: true };
+        }
+        // nextChapterId 已指向别的章节 → 本节平台认为不用再学
+        if (ss.nextChapterId && ss.nextChapterId !== curChapter) {
+          // 但还要看本节点是否真的完成（nextChapter 可能是"下一个未完成"）
+          const node = currentNode();
+          const nodeDone = node ? !!node.querySelector(TP.DONE) : false;
+          if (nodeDone) {
+            return { done: true, level: 'studystate-next', nextChapterId: ss.nextChapterId };
+          }
+        }
+      }
 
-      return false;
-    } catch { return false; }
+      // ── ② 当前树节点 ──
+      const node = currentNode();
+      if (node) {
+        const isDone = !!node.querySelector(TP.DONE);
+        const todoCnt = +(node.querySelector('.jobUnfinishCount')?.value || 0);
+        if (!isDone || todoCnt > 0) {
+          return {
+            done: false,
+            level: 'node',
+            reason: '当前节点待完成 ' + todoCnt + ' 个',
+            todoCount: todoCnt
+          };
+        }
+      }
+
+      // ── ③ jobhint ──
+      const jh = document.getElementById('jobhint');
+      if (jh) {
+        const n = parseInt((jh.textContent || '').trim(), 10);
+        if (isFinite(n) && n > 0) {
+          return { done: false, level: 'jobhint', reason: '本节还有 ' + n + ' 个任务点' };
+        }
+      }
+
+      // ── ④ 视频任务点：只看平台标记，不自己算进度 ──
+      //
+      // 踩过的坑（用户实测）：
+      //   视频才播到 1:28/7:53（18%），平台已经标绿「任务点已完成」了。
+      //   原因：学习通有每日限流 ——
+      //     · 今日视频任务点完成数已达上限
+      //     · 今日视频观看时长已达上限
+      //   达到上限后，平台不再累计任务点，直接标成完成。
+      //
+      // 所以**不能用 currentTime/duration >= 0.9 判断**，
+      // 必须读平台自己的标记：
+      //   · .ans-job-finished         容器 class
+      //   · aria-label="任务点已完成"   最直接
+      //   · .ans-job-icon 是否有 video/clear
+      const videoTask = readVideoTaskState();
+      if (videoTask) {
+        if (videoTask.done) {
+          return { done: true, level: 'video-mark-done' };
+        }
+        // 平台明确说未完成
+        return {
+          done: false,
+          level: 'video-mark-todo',
+          reason: '视频任务点未完成（平台标记）',
+          videoPercent: state.videoPercent
+        };
+      }
+
+      // 没有视频任务点图标 → 当前页面不是视频类型，用兜底
+      // 注意：这时才用进度判断，而且只作为参考
+      const v = q1('video');
+      if (v && isFinite(v.duration) && v.duration > 0) {
+        const threshold = Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD;
+        const pct = v.currentTime / v.duration;
+        if (pct < threshold) {
+          return {
+            done: false,
+            level: 'video',
+            reason: '视频仅完成 ' + Math.round(pct * 100) + '%',
+            videoPercent: pct
+          };
+        }
+      }
+
+      if (state.videoDone === false) {
+        return {
+          done: false,
+          level: 'video-state',
+          reason: '视频未达标 ' + Math.round((state.videoPercent || 0) * 100) + '%'
+        };
+      }
+
+      return { done: true, level: 'all-clear' };
+    } catch (e) {
+      return { done: false, reason: '校验异常: ' + (e?.message || '') };
+    }
   }
 
   /**
@@ -1396,17 +1881,41 @@ if (!window.__CS_BOOTED__) {
    */
   function handleIncompleteDialog() {
     try {
-      const dialogs = qAll('.con03, .popWord2, [class*=dialog], [class*=modal]');
+      const dialogs = qAll('.maskDiv.jobFinishTip, .maskDiv, .jobFinishTip, [class*=dialog], [class*=modal]');
+
       for (const d of dialogs) {
+        // ── 关键：必须真的可见 ──
+        // 坑：这个 div 一直存在于 DOM，只是默认 display:none。
+        // 只判文字不看可见性，会误以为弹窗存在、每轮都去点，
+        // 结果整条流程卡死在这一步。
+        const rect = d.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        let cs;
+        try { cs = getComputedStyle(d); } catch { cs = null; }
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) continue;
+
         const txt = (d.innerText || '');
         if (!/还有任务点未完成/.test(txt)) continue;
 
-        // 找到了弹窗，点「下一节」
-        const btn = [...d.querySelectorAll('a, button')]
-          .find(b => /下一节/.test((b.innerText || '').trim()));
-        if (btn) {
-          log('检测到「任务点未完成」弹窗，按配置点下一节');
-          try { btn.click(); return true; } catch { /* ignore */ }
+        // 弹窗真的出现了 —— 点「下一节」
+        const btns = [...d.querySelectorAll('a, button')];
+        const nextBtn = btns.find(b => {
+          const t = (b.innerText || '').trim();
+          const r = b.getBoundingClientRect();
+          return /^下一节$/.test(t) && r.width > 10 && r.height > 10;
+        });
+
+        if (nextBtn) {
+          log('检测到「任务点未完成」弹窗（可见），点下一节');
+          try { nextBtn.click(); return true; } catch { /* ignore */ }
+        }
+
+        // 没有「下一节」就点关闭，别让它挡着
+        const closeBtn = btns.find(b => /popClose|closed02/.test(b.className || '')
+          || /^(知道了|取消|关闭)$/.test((b.innerText || '').trim()));
+        if (closeBtn) {
+          log('关闭「任务点未完成」弹窗');
+          try { closeBtn.click(); return true; } catch { /* ignore */ }
         }
       }
     } catch { /* ignore */ }
@@ -1463,6 +1972,16 @@ if (!window.__CS_BOOTED__) {
       return;
     }
 
+    // 每日任务点上限：命中就停，别白刷（也降低风控风险）
+    if (IS_TOP) {
+      const lim = detectDailyLimit();
+      if (lim.limited) {
+        setStatus('⏸ ' + lim.reason + '，今天无法再完成任务点。已停止', false);
+        state.stopped = true;
+        return;
+      }
+    }
+
     /* ────────────────────────────────────────────
      * 顶层：只做协调，不碰内容
      *
@@ -1472,14 +1991,13 @@ if (!window.__CS_BOOTED__) {
      * 不能替代学习行为 —— 所以不在这里滚。
      * ──────────────────────────────────────────── */
     if (IS_TOP) {
-      // ── 最优先：确认停在有任务点的标签上 ──
-      // 学习通一个章节有多个标签，「学习要点」是纯文字，
-      // 「微课学习」才装视频/文档。停在错误标签上滚，
-      // 用户看到的就只有目录在动、内容不动。
-      if (await ensureContentTab()) return;
+      // 注意：不主动切换标签！
+      // 用户要求的是「在当前标签里滚到底，然后点下一节」，
+      // 而不是替用户切换到他想要的标签。
+      // 只看当前标签的内容：有视频就播、有文档就滚、有题就答，
+      // 都没有就滚到底点下一节。
 
       // 顶层也可能直接承载内容（单层页面、或学习通把视频放顶层时），
-      // 所以先处理自己的视频/文档，再走协调逻辑
       if (await runVideo()) {
         const v = qAll('video')[0];
         const rate = v ? (v.playbackRate || 1) : 1;
@@ -1558,8 +2076,18 @@ if (!window.__CS_BOOTED__) {
    *   2. 本节还有内容没看完 → 等（子 frame 在滚）
    *   3. 全都完成了 → 翻到下一个未完成章节
    */
+  /**
+   * 顶层协调
+   *
+   * 核心原则（用户要求）：**任务点没完成，绝不翻页。**
+   *
+   * 判断顺序：
+   *   1. 有 frame 在忙（在播视频/做题目）→ 等
+   *   2. 任务点四级校验没过 → 等，并在状态栏说明卡在哪
+   *   3. 全都完成 → 翻到下一个未完成章节
+   */
   async function tickTop() {
-    // 有人忙就先等着
+    // ── 1. 有 frame 在忙就先等着 ──
     let busyElsewhere = false;
     try {
       const r = await chrome.runtime.sendMessage({ type: 'tab:busy' });
@@ -1571,59 +2099,129 @@ if (!window.__CS_BOOTED__) {
       return;
     }
 
-    // 本节任务点统计
-    const stats = getTaskPointStats();
-    const chapterDone = isCurrentChapterDone();
-
-    // ── 关键：先确认停在「有任务点」的标签上 ──
-    // 学习通一个章节常有多个标签：学习要点（纯文字）、微课学习（视频）。
-    // 停在「学习要点」上滚只是滚说明文字，任务点没开始。
-    const curTab = activeTab();
-    let needSwitch = false;
-
-    if (curTab && !isContentTab(curTab.title)) {
-      // 当前标签不是内容型，看看有没有内容型标签可切
-      const nextTab = findNextContentTab();
-      if (nextTab) needSwitch = nextTab;
-    } else if (curTab && currentTabFinished()) {
-      // 当前标签的内容已处理完 → 切到下一个内容型标签
-      const nextTab = findNextContentTab();
-      if (nextTab) needSwitch = nextTab;
-    }
-
-    if (needSwitch) {
-      setStatus('↪ 切换到「' + needSwitch.title + '」', false);
-      if (switchToTab(needSwitch)) {
-        await sleep(2500);
-        scrollTicksCleanup();
-        state.docDone = false;
-        state.docNextAt = 0;
-        return;
-      }
-    }
-
-    // 处理「还有任务点未完成」的弹窗
+    // ── 2. 处理「还有任务点未完成」的确认弹窗 ──
     if (handleIncompleteDialog()) {
-      setStatus('⏭ 已跳过未完成任务点', false);
+      setStatus('⏭ 已处理任务点弹窗', false);
       await sleep(2000);
       return;
     }
 
-    // 没完成且不允许跳过 → 停在这里提示，但不停止运行。
-    // 注意：stats.unknown（页面上完全没有任务点标记）时不能拦，
-    // 否则普通页面永远翻不了页。
-    if (!chapterDone && !stats.unknown && !state.cfg.auto.skipUnfinished) {
-      setStatus('⚠ 本章还有 ' + stats.todo + ' 个任务点未完成', false);
-      await sleep(state.cfg.auto.loopInterval * 2);
-      return;
+    /* ────────────────────────────────────────────────
+     * 3. 任务点校验 + 标签切换
+     *
+     * 用户策略（方案 B）：
+     *   **任务点在别的标签时，自动切过去做完，再翻页。**
+     *
+     * 判断顺序：
+     *   ① 当前标签是纯文字（学习要点）但别处有内容型标签 → 切过去
+     *   ② 当前标签是内容型且已做完，别处还有内容型标签 → 切过去
+     *   ③ 当前标签是内容型但没做完 → 原地等，别切走
+     *   ④ 所有内容型标签都做完了 → 检查任务点，过了就翻页
+     * ──────────────────────────────────────────────── */
+
+    const curTab = activeChapterTab();
+    const chkPre = isCurrentChapterDone();
+
+    // 只要本节点还没标记完成，就尝试切到任务点所在的标签
+    if (!chkPre.done) {
+      // ① 当前是纯文字标签 → 切到内容型
+      if (curTab && !isContentTab(curTab.title)) {
+        const target = findNextContentTab(false);
+        if (target) {
+          setStatus('↪ 任务点在「' + target.title + '」，切过去处理', true);
+          if (switchToTab(target)) {
+            await sleep(2500);
+            scrollTicksCleanup();
+            state.docDone = false;
+            state.docNextAt = 0;
+            state.videoDone = true;
+            state.videoPercent = 0;
+            state.quizDoneSig = '';
+            return;
+          }
+        }
+      }
+
+      // ② 当前是内容型且已做完 → 切到还有没做完的标签
+      if (curTab && isContentTab(curTab.title) && currentTabContentDone()) {
+        const target = findNextContentTab(false);
+        if (target) {
+          setStatus('↪ 「' + curTab.title + '」已处理完，切到「' + target.title + '」', true);
+          if (switchToTab(target)) {
+            await sleep(2500);
+            scrollTicksCleanup();
+            state.docDone = false;
+            state.docNextAt = 0;
+            state.videoDone = true;
+            state.videoPercent = 0;
+            state.quizDoneSig = '';
+            return;
+          }
+        }
+      }
     }
 
+    // ── 任务点四级校验 ──
+    const chk = isCurrentChapterDone();
+
+    if (!chk.done) {
+      // A. 视频未达标 → 原地等，继续播
+      if (chk.level === 'video' || chk.level === 'video-state') {
+        const pct = Math.round((chk.videoPercent ?? state.videoPercent ?? 0) * 100);
+        setStatus('📺 视频 ' + pct + '%（需 ≥' + Math.round((Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD) * 100) + '%，继续播放）', true);
+        await sleep(state.cfg.auto.loopInterval || 2500);
+        return;
+      }
+
+      // B/C. 当前页面还有活可干 → 继续干
+      const hasVideoHere = !!q1('video');
+      const hasQuizHere = hasQuiz();
+      const hasDocHere = !state.docDone && !!findScrollTarget();
+      if (hasVideoHere || hasQuizHere || hasDocHere) {
+        const todo = chk.todoCount || 0;
+        setStatus('⏳ 处理当前内容中（本章还有 ' + todo + ' 个任务点）', true);
+        await sleep(state.cfg.auto.loopInterval || 2500);
+        return;
+      }
+
+      // D. 实在做不了 → 按配置决定跳过还是停
+      const todo = chk.todoCount || 0;
+      const where = describeWhereTaskPointIs();
+
+      if (!state.cfg.auto.skipUnfinished) {
+        setStatus(
+          '⏸ 本章还有 ' + todo + ' 个任务点未完成' +
+          (where ? '（在「' + where + '」标签）' : '') +
+          '。请手动处理，或在设置里开启「跳过未完成」',
+          false
+        );
+        state.stopped = true;
+        return;
+      }
+
+      setStatus('⏭ 本章任务点在' + (where ? '「' + where + '」' : '其它标签') + '，按设置跳过', false);
+      await sleep(1200);
+    }
+
+    // ── 4. 本节确实完成了 ──
     if (!state.cfg.auto.autoNext) {
-      setStatus('✓ 本节完成（未开自动下一节）', false);
+      setStatus('✓ 本节任务点已完成（未开自动下一节）', false);
       return;
     }
 
-    // 到这里：本节完成，该翻页了
+    // 最低停留时间（防止刷太快）
+    const dwellMs = (Number(state.cfg.auto.minDwellSeconds) || 0) * 1000;
+    if (dwellMs > 0 && state.chapterEnterAt) {
+      const stayed = Date.now() - state.chapterEnterAt;
+      if (stayed < dwellMs) {
+        setStatus('✓ 本节已完成，稍候翻页（' + Math.ceil((dwellMs - stayed) / 1000) + 's）', true);
+        await sleep(dwellMs - stayed);
+        // 停留结束后重新校验，防止期间状态变化
+        if (!isCurrentChapterDone().done) return;
+      }
+    }
+
+    // ── 5. 翻页 ──
     setStatus('⏭ 切换到下一个未完成章节…', false);
     await sleep(1200);
 
@@ -1639,13 +2237,17 @@ if (!window.__CS_BOOTED__) {
       return;
     }
 
-    // 跳转成功
+    // ── 6. 跳转成功，重置状态 ──
     state.nextFailCount = 0;
     scrollTicksCleanup();
     state.docDone = false;
     state.docNextAt = 0;
+    state.videoDone = true;
+    state.videoPercent = 0;
     state.lastHref = location.href;
+    state.chapterEnterAt = Date.now();
   }
+
   async function loop() {
     while (!state.stopped) {
       try { await tick(); }
@@ -1833,7 +2435,7 @@ if (!window.__CS_BOOTED__) {
               ok: r.ok,
               reason: r.reason,
               questions: r.ok ? r.questions.map(q => ({
-                num: q.num, type: q.type, text: q.text, options: q.options
+                num: q.num, type: q.type, text: q.title || '', options: q.options.map(o => ({ letter: o.letter, text: o.text, value: o.value }))
               })) : []
             });
             break;

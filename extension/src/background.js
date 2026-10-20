@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 学习通自动学习助手 — 后台 Service Worker (MV3)
  *
  * 职责：
@@ -23,6 +23,9 @@ const DEFAULTS = {
     docStep: 400,           // 单次滚动像素（兼容保留）
     docHumanLike: true,     // 拟人化滚动：1.5 秒一屏
     skipUnfinished: true,   // 任务点未完成时是否也跳下一节
+    videoThreshold: 0.9,    // 视频完成门槛（页面明示 90%）
+    videoWaitTimeout: 300,  // 视频最长等待秒数（超时跳过）
+    minDwellSeconds: 5,     // 每节最低停留秒数（防刷太快）
     docInterval: 1200,      // 滚动间隔 ms
     loopInterval: 2500,     // 主循环间隔 ms
     antiPause: true,        // 防切屏暂停
@@ -136,11 +139,19 @@ function setFrameStatus(tabId, frameId, status) {
 }
 
 /** 判断某标签页是否有任意 frame 正在忙 */
-function anyBusy(tabId) {
+/**
+ * 是否还有其他 frame 在忙
+ *
+ * 注意 excludeFrameId：调用方要把自己排除掉。
+ * 踩过的坑 —— 顶层 tickTop 问"有人忙吗"时，自己刚报过 busy=true，
+ * 结果永远返回"有人忙"，于是永远不翻页，页面卡死。
+ */
+function anyBusy(tabId, excludeFrameId) {
   pruneStatus();
   const frames = frameStatus.get(tabId);
   if (!frames) return false;
-  for (const st of frames.values()) {
+  for (const [fid, st] of frames) {
+    if (excludeFrameId != null && fid === excludeFrameId) continue;   // 排除自己
     if (st.busy && Date.now() - st.ts < 8000) return true;
   }
   return false;
@@ -806,7 +817,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         case 'tab:busy': {
           const tid = tabId ?? msg.tabId;
-          sendResponse({ ok: true, busy: anyBusy(tid), agg: aggregate(tid) });
+          // 排除调用方自己，否则顶层会一直认为"有人忙"
+          sendResponse({ ok: true, busy: anyBusy(tid, frameId), agg: aggregate(tid) });
           break;
         }
 
