@@ -58,6 +58,7 @@ if (!window.__CS_BOOTED__) {
     quizRunning: false,
     lastHref: location.href,
     docDone: false,         // 当前文档是否已看完
+    docTarget: '',          // 当前滚动的内容区名（调试用）
     docNextAt: 0,           // 下次允许滚动的时间（拟人节流）
     speedLocked: false,     // 平台提示「不可倍速」
     speedGiveUp: false,     // 试过被拒，永久放弃倍速
@@ -278,6 +279,174 @@ if (!window.__CS_BOOTED__) {
     NEXT: ['#prevNextFocusNext', '.nextChapter', '.prev_next.next']
   };
 
+  /* ------------------------------------------------------------
+   * 章节内标签切换
+   *
+   * 一个章节常有多个标签：
+   *   1学习要点   ← 纯文字说明，不是任务点
+   *   2微课学习   ← 真正的视频/文档任务点在这里
+   *
+   * 扩展如果停在「学习要点」上滚，滚的是说明文字，
+   * 任务点根本没开始 —— 用户看到的就是"只有目录在动"。
+   * 所以发现当前标签没有任务点、其他标签有，要自动切过去。
+   * ------------------------------------------------------------ */
+
+  /** 列出章节内的标签 */
+  function listChapterTabs() {
+    try {
+      return qAll('li[id^="dct"]').map(li => ({
+        el: li,
+        id: li.id,
+        title: (li.getAttribute('title') || li.textContent || '').trim(),
+        active: /active/.test(li.className || ''),
+        cardId: li.getAttribute('cardid') || ''
+      }));
+    } catch { return []; }
+  }
+
+  /** 当前激活的标签 */
+  function activeTab() {
+    return listChapterTabs().find(t => t.active) || null;
+  }
+
+  /** 切换标签（触发它的 onclick） */
+  function switchToTab(tab) {
+    if (!tab || !tab.el) return false;
+    try {
+      tab.el.click();
+      log('切换标签到「' + tab.title + '」');
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 该标签是不是「内容型」的（可能有任务点）
+   * 学习要点/本章小结/阅读书目 这类是纯文字，不含任务点
+   */
+  function isContentTab(title) {
+    return /微课|视频|案例|拓展|课件|文档|PPT|教材/i.test(title)
+        && !/学习要点|本章小结|阅读书目|讨论|测验/i.test(title);
+  }
+
+  /**
+   * 找下一个待处理的标签
+   *
+   * 逻辑：当前标签不是内容型，或当前标签内容已处理完
+   *      → 切到下一个内容型标签
+   */
+  function findNextContentTab() {
+    const tabs = listChapterTabs();
+    if (tabs.length <= 1) return null;
+
+    const cur = tabs.find(t => t.active);
+    const curIdx = cur ? tabs.indexOf(cur) : -1;
+
+    // 从当前往后找内容型标签
+    for (let i = curIdx + 1; i < tabs.length; i++) {
+      if (isContentTab(tabs[i].title)) return tabs[i];
+    }
+    // 没找到就往回找（可能前面的还没做）
+    for (let i = 0; i < curIdx; i++) {
+      if (isContentTab(tabs[i].title)) return tabs[i];
+    }
+    return null;
+  }
+
+  /**
+   * 确保当前停在「有任务点」的标签上
+   *
+   * 返回 true 表示刚做了切换（本轮循环应该让位）。
+   *
+   * 判断依据：
+   *   · 当前标签是「学习要点」这类纯文字 → 切到内容型标签
+   *   · 当前标签内容已处理完 → 切到下一个内容型标签
+   *   · 没有内容型标签可切 → 不动作
+   */
+  async function ensureContentTab() {
+    try {
+      const tabs = listChapterTabs();
+      if (tabs.length <= 1) return false;
+
+      const cur = tabs.find(t => t.active);
+      if (!cur) return false;
+
+      const curIsContent = isContentTab(cur.title);
+
+      // 情况 1：停在纯文字标签上 → 立刻切到内容型
+      if (!curIsContent) {
+        const next = findNextContentTab();
+        if (next) {
+          setStatus('↪ 切换到「' + next.title + '」', true);
+          if (switchToTab(next)) {
+            await sleep(2500);
+            scrollTicksCleanup();
+            state.docDone = false;
+            state.docNextAt = 0;
+            return true;
+          }
+        }
+        return false;
+      }
+
+      // 情况 2：内容型标签，但内容已看完 → 切下一个
+      if (currentTabFinished()) {
+        const next = findNextContentTab();
+        if (next && next.id !== cur.id) {
+          setStatus('↪ 「' + cur.title + '」已完成，切到「' + next.title + '」', true);
+          if (switchToTab(next)) {
+            await sleep(2500);
+            scrollTicksCleanup();
+            state.docDone = false;
+            state.docNextAt = 0;
+            return true;
+          }
+        }
+      }
+
+      return false;
+    } catch { return false; }
+  }
+  /**
+   * 当前标签的内容是否已经处理完
+   *
+   * 关键点：视频/文档都在**子 iframe** 里，
+   * 顶层文档里 querySelector('video') 查不到，会误判"已完成"。
+   * 所以用「本帧有没有内容」+「子帧状态」综合判断：
+   *   · 顶层：看是否有内容型 iframe，有就认为还没完
+   *   · 子帧：看自己的视频/文档/题目
+   */
+  function currentTabFinished() {
+    try {
+      // ── 本帧自己的内容 ──
+      const v = q1('video');
+      if (v && !v.ended) {
+        if (!isFinite(v.duration) || v.duration <= 0) return false;
+        if (v.currentTime / v.duration < 0.99) return false;
+      }
+
+      if (hasQuiz()) return false;
+
+      const box = findScrollTarget();
+      if (box && !state.docDone) {
+        const maxTop = box.scrollHeight - box.clientHeight;
+        if (box.scrollTop < maxTop - 12) return false;
+      }
+
+      // ── 顶层：有内容型 iframe 就说明还有事 ──
+      if (IS_TOP) {
+        const frames = qAll('iframe');
+        const hasContentFrame = frames.some(f => {
+          const src = (f.src || '');
+          return /knowledge\/cards|ananas\/modules|pan-yz|insertdoc/i.test(src)
+            && f.offsetHeight > 100;
+        });
+        if (hasContentFrame) return false;
+      }
+
+      return true;
+    } catch { return true; }
+  }
+
   /** 当前章节是否还有未完成任务点 */
   function hasPendingTaskPoints() {
     try {
@@ -373,8 +542,38 @@ if (!window.__CS_BOOTED__) {
    *
    * 所以这里按优先级找，找到什么滚什么。
    */
+  /**
+   * 判断某个容器是不是「内容区」
+   *
+   * 踩过的坑：学习通右侧的目录树 #coursetree 也是个大滚动容器
+   * （滚高 5000+），如果按"最大的可滚动容器"来选，会去滚目录，
+   * 而不是滚微课正文 —— 用户看到的就是"目录在动、内容不动"。
+   *
+   * 所以必须把侧栏、目录、导航这类 UI 排除掉。
+   */
+  const NON_CONTENT = /coursetree|posCatalog|catalog|sidebar|side-bar|nav|menu|toc|directory|rightpanel|right-panel|tab|breadcrumb|header|footer|toolbar|notice|tip-bar/i;
+
+  function isContentArea(el) {
+    if (!el || !el.tagName) return false;
+    if (el === document.body || el === document.documentElement) return false;
+
+    // 自己的 class / id 命中 UI 关键字 → 排除
+    const sig = ((el.id || '') + ' ' + (el.className || '').toString());
+    if (NON_CONTENT.test(sig)) return false;
+
+    // 祖先里有 UI 关键字 → 也排除
+    let p = el.parentElement, guard = 0;
+    while (p && guard++ < 8) {
+      const ps = ((p.id || '') + ' ' + (p.className || '').toString());
+      if (NON_CONTENT.test(ps)) return false;
+      p = p.parentElement;
+    }
+    return true;
+  }
+
+  /** 内容区里找滚动目标 */
   function findScrollTarget() {
-    // 1) 明确的文档容器
+    // 1) 明确的学习文档容器（最可靠）
     const panes = qAll('#panView, .insertdoc-online-pdf, .insertdoc, #docContainer');
     for (const pane of panes) {
       try {
@@ -384,24 +583,54 @@ if (!window.__CS_BOOTED__) {
       } catch { /* ignore */ }
     }
 
-    // 2) 任何大的可滚动容器（PDF 阅读器常见）
+    // 2) 学习内容主区域里的可滚动元素
+    //    学习通常见容器：#content、.content、.main、#main、
+    //    .chapter_content、.mark_item 等
+    const MAIN = '#content, .content, #main, .main, .chapter_content, .mark_item, .ans-attach-online';
+    try {
+      const mains = qAll(MAIN);
+      for (const main of mains) {
+        if (!isContentArea(main)) continue;
+        const cands = [main, ...main.querySelectorAll('*')]
+          .filter(el => {
+            if (!el || !isContentArea(el)) return false;
+            return el.scrollHeight > el.clientHeight + 100 && el.clientHeight > 120;
+          })
+          .sort((a, b) => b.clientHeight - a.clientHeight);
+        if (cands.length) return cands[0];
+      }
+    } catch { /* ignore */ }
+
+    // 3) 兜底：大滚动容器，但必须排除 UI 区
     try {
       const big = qAll('div, section, article')
         .filter(el => {
-          if (!el || el === document.body || el === document.documentElement) return false;
+          if (!isContentArea(el)) return false;
           const sh = el.scrollHeight, ch = el.clientHeight;
-          // 高度要够大，且确实能滚
           return sh > ch + 100 && ch > 200 && el.offsetParent !== null;
         })
-        .sort((a, b) => b.scrollHeight - a.scrollHeight);
+        .sort((a, b) => {
+          // 优先靠左、靠中的（内容区），目录通常在右侧
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return (ra.left - rb.left) || (b.clientHeight - a.clientHeight);
+        });
       if (big.length) return big[0];
     } catch { /* ignore */ }
 
-    // 3) 整个文档（普通章节页）
+    // 4) 整个文档
     const se = document.scrollingElement || document.documentElement;
     if (se && se.scrollHeight > se.clientHeight + 40) return se;
 
     return null;
+  }
+
+  /** 当前正在滚的是不是内容区（用于状态提示） */
+  function describeScrollTarget(el) {
+    if (!el) return '无';
+    if (el === document.scrollingElement || el === document.documentElement) return '整页';
+    const id = el.id ? '#' + el.id : '';
+    const cls = (el.className || '').toString().split(/\s+/).filter(Boolean)[0] || '';
+    return (el.tagName || '') + id + (cls ? '.' + cls : '');
   }
 
   /**
@@ -454,7 +683,9 @@ if (!window.__CS_BOOTED__) {
     state.docNextAt = now + 1500;
 
     const pct = maxTop > 0 ? Math.round(next / maxTop * 100) : 100;
-    log('滚动 ' + Math.round(cur) + ' → ' + Math.round(next) + '（' + pct + '%）');
+    const tname = describeScrollTarget(box);
+    log('滚动 ' + tname + ' ' + Math.round(cur) + ' → ' + Math.round(next) + '（' + pct + '%）');
+    state.docTarget = tname;
     return true;
   }
 
@@ -1241,6 +1472,12 @@ if (!window.__CS_BOOTED__) {
      * 不能替代学习行为 —— 所以不在这里滚。
      * ──────────────────────────────────────────── */
     if (IS_TOP) {
+      // ── 最优先：确认停在有任务点的标签上 ──
+      // 学习通一个章节有多个标签，「学习要点」是纯文字，
+      // 「微课学习」才装视频/文档。停在错误标签上滚，
+      // 用户看到的就只有目录在动、内容不动。
+      if (await ensureContentTab()) return;
+
       // 顶层也可能直接承载内容（单层页面、或学习通把视频放顶层时），
       // 所以先处理自己的视频/文档，再走协调逻辑
       if (await runVideo()) {
@@ -1268,7 +1505,7 @@ if (!window.__CS_BOOTED__) {
         if (did) return;
       }
       if (!state.docDone && await runDocument()) {
-        setStatus('📄 文档浏览中（拟人节奏）', true);
+        setStatus('📄 浏览中（' + (state.docTarget || '内容区') + '）', true);
         return;
       }
       await tickTop();
@@ -1305,7 +1542,7 @@ if (!window.__CS_BOOTED__) {
 
     // (3) 文档 / PPT —— 1.5 秒一屏往下看
     if (!state.docDone && await runDocument()) {
-      setStatus('📄 文档浏览中（拟人节奏）', true);
+      setStatus('📄 浏览中（' + (state.docTarget || '内容区') + '）', true);
       return;
     }
 
@@ -1337,6 +1574,33 @@ if (!window.__CS_BOOTED__) {
     // 本节任务点统计
     const stats = getTaskPointStats();
     const chapterDone = isCurrentChapterDone();
+
+    // ── 关键：先确认停在「有任务点」的标签上 ──
+    // 学习通一个章节常有多个标签：学习要点（纯文字）、微课学习（视频）。
+    // 停在「学习要点」上滚只是滚说明文字，任务点没开始。
+    const curTab = activeTab();
+    let needSwitch = false;
+
+    if (curTab && !isContentTab(curTab.title)) {
+      // 当前标签不是内容型，看看有没有内容型标签可切
+      const nextTab = findNextContentTab();
+      if (nextTab) needSwitch = nextTab;
+    } else if (curTab && currentTabFinished()) {
+      // 当前标签的内容已处理完 → 切到下一个内容型标签
+      const nextTab = findNextContentTab();
+      if (nextTab) needSwitch = nextTab;
+    }
+
+    if (needSwitch) {
+      setStatus('↪ 切换到「' + needSwitch.title + '」', false);
+      if (switchToTab(needSwitch)) {
+        await sleep(2500);
+        scrollTicksCleanup();
+        state.docDone = false;
+        state.docNextAt = 0;
+        return;
+      }
+    }
 
     // 处理「还有任务点未完成」的弹窗
     if (handleIncompleteDialog()) {
