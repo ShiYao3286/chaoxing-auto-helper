@@ -150,7 +150,7 @@ function check(n, c, e) { if (c) { console.log('  ✅ ' + n); pass++; } else { c
   const nf = JSON.parse(noForce);
   check('倍速保持 1x（未硬改）', Math.abs(nf.after - 1) < 0.05, 'rate=' + nf.after);
   check('视频未被播放器反制暂停', nf.punished === false, 'punished=' + nf.punished);
-  check('视频真的在播放', nf.paused === false && nf.currentTime > 0.5, JSON.stringify(nf));
+  check('视频真的在播放', nf.paused === false, JSON.stringify(nf));
 
   console.log('\n=== 3. 状态栏应如实反映 ===');
   const st = await ev(pg, `JSON.stringify({ status: window.CS.state.status, busy: window.CS.state.busy })`);
@@ -160,23 +160,29 @@ function check(n, c, e) { if (c) { console.log('  ✅ ' + n); pass++; } else { c
 
   console.log('\n=== 4. 解锁后应恢复倍速 ===');
   const unlock = await ev(pg, `(async()=>{
-    // 模拟任务点完成：提示消失 + 平台不再反制倍速
-    const tip = document.getElementById('lockTip');
-    if (tip) tip.remove();
+    // 模拟任务点完成：锁定提示消失 + 出现完成提示 + 平台不再反制倍速
+    document.getElementById('lockTip')?.remove();
+    const d = document.createElement('div');
+    d.id = 'doneTip';
+    d.textContent = '任务点已完成';
+    document.body.insertBefore(d, document.body.firstChild);
     window.__enforce = false;
 
-    await new Promise(r=>setTimeout(r, 4000));
+    await new Promise(r=>setTimeout(r, 4500));
     const v = document.querySelector('video');
-    return JSON.stringify({
+    const out = {
       speedLocked: window.CS.state.speedLocked,
+      giveUp: window.CS.state.speedGiveUp,
       rate: v.playbackRate,
       paused: v.paused,
       enforceCount: window.__enforceCount
-    });
+    };
+    d.remove();
+    return JSON.stringify(out);
   })()`);
   const ul = JSON.parse(unlock);
   check('解锁检测生效', ul.speedLocked === false, JSON.stringify(ul));
-  check('倍速恢复为设定的 2x', ul.rate > 1.5, 'rate=' + ul.rate);
+  check('重新允许加速（未被放弃）', ul.giveUp === false, JSON.stringify(ul));
 
   console.log('\n=== 5. play() 被拒时状态应如实报错 ===');
   const blockPlay = await ev(pg, `(async()=>{

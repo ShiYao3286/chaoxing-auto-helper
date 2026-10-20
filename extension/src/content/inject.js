@@ -19,6 +19,23 @@
 if (!window.__CS_BOOTED__) {
   window.__CS_BOOTED__ = true;
 
+  /* ------------------------------------------------------------
+   * 注入标记
+   *
+   * 内容脚本跑在隔离世界，页面主世界（以及 DevTools 的
+   * 隔离世界）看不到 window.__CS_BOOTED__。
+   * 但 DOM 是所有世界共享的，所以往 <html> 上打个属性，
+   * 既能用于排查「这个 iframe 到底有没有注入扩展」，
+   * 也能让跨 frame 的诊断脚本判断注入情况。
+   * ------------------------------------------------------------ */
+  try {
+    document.documentElement.setAttribute('data-cs-booted', '1');
+    document.documentElement.setAttribute(
+      'data-cs-frame',
+      (window.top === window.self) ? 'top' : 'sub'
+    );
+  } catch { /* ignore */ }
+
   /* ============================================================
    * 0. 基础
    * ============================================================ */
@@ -40,7 +57,10 @@ if (!window.__CS_BOOTED__) {
     quizDoneSig: '',
     quizRunning: false,
     lastHref: location.href,
-    speedLocked: false     // 学习通「任务点未完成」时会锁倍速
+    speedLocked: false,     // 平台提示「不可倍速」
+    speedGiveUp: false,     // 试过被拒，永久放弃倍速
+    speedReverts: 0,        // 倍速被改回的次数
+    antispider: false       // 检测到风控验证页
   };
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -76,51 +96,129 @@ if (!window.__CS_BOOTED__) {
    * ============================================================ */
 
   /**
-   * 检测页面是否禁止倍速
+   * 倍速锁定检测（三重信号）
    *
-   * 学习通在「任务点未完成」时会显示：
-   *   「观看时长需 ≥ 总时长的 70%（未完成任务点前, 当前视频不可倍速、
-   *     不可拖拽、观看时不可离开或将页面最小化）」
+   * 学习通锁倍速的方式不止一种，实测至少三类：
+   *   1. 页面文字提示：「未完成任务点前，当前视频不可倍速」
+   *   2. 播放器静默改回 1x：设 2x 后几百毫秒内变回 1
+   *   3. 直接反制暂停视频，甚至触发风控验证页
    *
-   * 这种情况下强行改 playbackRate，播放器会当作异常行为反制
-   * —— 实测到的是它直接暂停视频，然后扩展每轮又去 play()，
-   * 形成拉锯，视频看起来完全没动。
+   * 第 2 类最隐蔽 —— 代码看着"设置成功了"，实际下一帧被改回。
+   * 所以必须主动验证：设完之后隔一会儿回读，看还在不在。
    */
-  function detectSpeedLocked() {
+  function checkLockSignals() {
     try {
-      // 只看当前文档里的提示文字，不跨 iframe
-      const txt = (document.body?.innerText || '').slice(0, 8000);
-      if (/不可倍速|当前视频不可|禁止倍速|不允许倍速/.test(txt)) return true;
+      // 取视频附近的文本，避免页面按钮文字干扰
+      // （踩过坑：按钮写着「任务点已完成」，导致误判为已解锁）
+      //
+      // 注意上溯层数不能太多 —— 超出 DOM 树会拿到 null，
+      // 结果 txt 为空、什么都判断不了，锁定状态会永远卡住。
+      // 所以逐层上溯，取第一个拿得到文本的容器。
+      let txt = '';
+      try {
+        const v = q1('video');
+        let node = v;
+        for (let i = 0; i < 6 && node; i++) {
+          node = node.parentElement;
+          if (!node) break;
+          const t = node.innerText || '';
+          if (t.length > 30) { txt = t; break; }
+        }
+      } catch { /* ignore */ }
+
+      // 拿不到就用全文（总能拿到）
+      if (!txt) txt = document.body?.innerText || '';
+
+      // 剔除按钮里的文字
+      try {
+        for (const b of qAll('button, .btn, input[type=button]')) {
+          const bt = (b.innerText || '').trim();
+          if (bt && bt.length > 1) txt = txt.split(bt).join('');
+        }
+      } catch { /* ignore */ }
+      txt = txt.slice(0, 8000);
+
+      // 风控验证页：立刻收手
+      if (/操作异常|请输入图片中的验证码/i.test(txt) || /antispider/i.test(location.href)) {
+        state.antispider = true;
+        return;
+      }
+
+      // 锁定提示优先判断（最可靠）
+      if (/不可倍速|当前视频不可|禁止倍速|不允许倍速/.test(txt)) {
+        state.speedLocked = true;
+        return;
+      }
+
+      // 明确的完成提示才算解锁
+      if (/任务点.{0,6}已完成|恭喜.{0,8}(完成|学完)/.test(txt)) {
+        if (state.speedLocked || state.speedGiveUp) {
+          log('检测到任务点已完成，重置倍速锁定状态');
+        }
+        state.speedLocked = false;
+        state.speedGiveUp = false;
+        state.speedReverts = 0;
+        return;
+      }
+
+      // 既没锁提示、也没完成提示 —— 保持现状，不做判断
     } catch { /* ignore */ }
-    return !!state.speedLocked;
   }
 
-  /** 记住倍速被锁的状态，避免每轮都扫 DOM */
-  function updateSpeedLock() {
-    try {
-      const txt = (document.body?.innerText || '').slice(0, 8000);
-      const hasLockText = /不可倍速|当前视频不可倍速|禁止倍速|不允许倍速/.test(txt);
-      const completed = /任务点已完成|恭喜.*完成|已完成学习/.test(txt);
+  /**
+   * 试改倍速：设一次 → 回读验证 → 不行就永久放弃
+   *
+   * 这是「不跟播放器较劲」的核心。
+   * 用户实测：强制 2x 时视频根本不动，改成 1x 就正常。
+   * 所以一旦发现被改回，立刻放弃倍速，优先保证能播下来。
+   *
+   * @returns {Promise<boolean>} 倍速是否真的生效
+   */
+  async function trySetRate(v, target) {
+    if (state.speedGiveUp || state.speedLocked) return false;
+    if (target <= 1.02) return true;
 
-      if (hasLockText) {
-        state.speedLocked = true;
-      } else if (completed) {
-        state.speedLocked = false;
-      } else if (state.speedLocked) {
-        // 提示文字消失了（滚动出视野、或任务点完成），
-        // 且没再看到「未完成任务点」这类文案 → 认为解锁
-        if (!/任务点未完成|未完成任务点/.test(txt)) {
-          state.speedLocked = false;
-        }
-      }
+    // 设一次
+    try {
+      const player = v.player || (window.videojs && v.id && window.videojs.getPlayer(v.id));
+      if (player && typeof player.playbackRate === 'function') player.playbackRate(target);
+      else v.playbackRate = target;
     } catch { /* ignore */ }
+
+    // 回读验证（关键步骤）
+    await sleep(600);
+    const actual = v.playbackRate || 1;
+
+    if (Math.abs(actual - target) < 0.1) {
+      state.speedReverts = 0;
+      return true;
+    }
+
+    // 被改回了
+    state.speedReverts = (state.speedReverts || 0) + 1;
+    log('倍速被改回：目标 ' + target + '，实际 ' + actual + '（第 ' + state.speedReverts + ' 次）');
+
+    // 连续 2 次被拒 → 永久放弃倍速
+    if (state.speedReverts >= 2) {
+      state.speedGiveUp = true;
+      setStatus('⚠ 平台锁定倍速，已自动改为 1x 正常播放', false);
+      log('放弃倍速，改 1x 保证能正常刷完');
+    }
+    return false;
   }
 
   async function runVideo() {
     const vids = qAll('video');
     if (!vids.length) return false;
 
-    updateSpeedLock();
+    checkLockSignals();
+
+    // 检测到风控页：停止一切操作
+    if (state.antispider) {
+      setStatus('⚠ 检测到平台验证，已停止。请在页面上完成验证', false);
+      state.stopped = true;
+      return false;
+    }
 
     let handled = false;
 
@@ -132,29 +230,23 @@ if (!window.__CS_BOOTED__) {
           try { v.muted = true; v.volume = 0; } catch { /* ignore */ }
         }
 
-        // ── 倍速：被锁时完全不碰 ──
-        // 强行设置会触发播放器反制（实测直接暂停），得不偿失。
-        if (!state.speedLocked) {
-          const target = Number(state.cfg.auto.rate) || 2;
-          try {
-            const player = v.player || (window.videojs && v.id && window.videojs.getPlayer(v.id));
-            if (player && typeof player.playbackRate === 'function') player.playbackRate(target);
-            else if (Math.abs((v.playbackRate || 1) - target) > 0.01) v.playbackRate = target;
-          } catch { /* ignore */ }
-        }
-
-        // ── 播放：验证真的播起来了 ──
+        // ── 顺序很重要：先让它真的播起来，再谈加速 ──
+        // 反过来容易触发播放器的"异常行为"判定。
         if (v.paused) {
           try { await v.play(); } catch (e) { log('play() 被拒', e?.message); }
 
-          // play() 返回后不一定真的在播（自动播放拦截等），
-          // 等一小会儿再确认，避免状态栏谎报「播放中」。
           if (v.paused) {
             await sleep(280);
             if (v.paused) {
               try { await v.play(); } catch { /* 再试一次 */ }
             }
           }
+        }
+
+        // 播起来了才动倍速
+        if (!v.paused && !state.speedGiveUp && !state.speedLocked) {
+          const target = Number(state.cfg.auto.rate) || 2;
+          await trySetRate(v, target);
         }
 
         handled = true;
@@ -880,6 +972,14 @@ if (!window.__CS_BOOTED__) {
 
     if (state.cfg.auto.antiPause) patchWindow(window);
 
+    // 风控页优先判断：命中就立刻停，别的什么都不做
+    checkLockSignals();
+    if (state.antispider) {
+      setStatus('⚠ 检测到平台验证，已停止。请在页面上完成验证', false);
+      state.stopped = true;
+      return;
+    }
+
     // (1) 本文档的视频
     if (await runVideo()) {
       // 状态必须反映真实情况，否则用户以为在刷、其实没动
@@ -888,7 +988,10 @@ if (!window.__CS_BOOTED__) {
       const rateText = Math.abs(rate - 1) < 0.05 ? '1x' : rate + 'x';
 
       if (v && !v.paused) {
-        if (state.speedLocked) {
+        if (state.speedGiveUp) {
+          // 试过加速被拒，已自动放弃 —— 明确告诉用户，别以为是扩展坏了
+          setStatus('▶ 视频播放中（' + rateText + '·平台锁定倍速，已自动放弃加速）', true);
+        } else if (state.speedLocked) {
           setStatus('▶ 视频播放中（' + rateText + '·本节点已锁定倍速）', true);
         } else {
           setStatus('▶ 视频播放中（' + rateText + '）', true);

@@ -19,8 +19,8 @@ button{padding:6px 14px;margin:6px 4px}
 
 <p id="stat">状态：加载中</p>
 <div>
-  <button id="toggleLock">模拟：任务点已完成（解锁倍速）</button>
-  <button id="togglePunish">模拟：播放器反制</button>
+  <button id="toggleLock">模拟解锁</button>
+  <button id="togglePunish">模拟反制</button>
 </div>
 
 <script>
@@ -36,6 +36,8 @@ const v = document.getElementById('v');
  *   true  = 任务点未完成，检测到非 1x 就改回去
  *   false = 任务点已完成，不再管
  * ---------------------------------------------------------- */
+// 模拟"播放器强制锁 1x"：不管怎么设都改回 1
+window.__hardLock = false;
 window.__enforce = true;
 window.__enforceCount = 0;
 
