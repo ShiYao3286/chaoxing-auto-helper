@@ -7,6 +7,9 @@
 ![Chrome](https://img.shields.io/badge/Chrome-102%2B-green)
 ![Edge](https://img.shields.io/badge/Edge-102%2B-green)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
+[![Release](https://img.shields.io/github/v/release/ShiYao3286/chaoxing-auto-helper)](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest)
+
+**[⬇ 下载最新版](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest)** · 解压后用「加载解压缩的扩展」装
 
 ---
 
@@ -46,12 +49,28 @@
 
 ### 1. 安装扩展
 
+**推荐：直接下载发布包**
+
+去 [Releases](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest) 下载 `chaoxing-auto-helper.zip`，然后：
+
 ```text
-1. Edge 地址栏输入 edge://extensions/
-2. 打开左下角「开发人员模式」
-3. 点「加载解压缩的扩展」
-4. 选择本仓库的 extension/ 目录
-5. 刷新已打开的学习通页面
+1. 解压到任意目录（解压后第一层应能看到 manifest.json）
+2. Edge 地址栏输入 edge://extensions/
+3. 打开左下角「开发人员模式」
+4. 点「加载解压缩的扩展」
+5. 选择 解压出来的那个目录
+6. 刷新已打开的学习通页面
+```
+
+> ⚠️ **选目录时最容易出错**：要选到**直接包含 `manifest.json`** 的那一层。
+> 如果你解压后得到 `chaoxing-auto-helper/extension/`，就进到 `extension` 里再选。
+
+**从源码安装**（想改代码的话）
+
+```text
+1. git clone https://github.com/ShiYao3286/chaoxing-auto-helper.git
+2. edge://extensions/ → 开发人员模式
+3. 加载解压缩的扩展 → 选仓库里的 extension/ 目录
 ```
 
 ### 2. 配置 API
