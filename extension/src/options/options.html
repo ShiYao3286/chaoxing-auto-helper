@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>学习通自动学习助手 · 设置</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 20px 90px;
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f6f8fa; color: #1f2328;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #6e7781; font-size: 13px; margin-bottom: 24px; }
+
+  .card {
+    background: #fff; border: 1px solid #d8dee4; border-radius: 10px;
+    padding: 20px 22px; margin-bottom: 18px;
+  }
+  .card h2 {
+    font-size: 15px; margin: 0 0 16px; padding-bottom: 10px;
+    border-bottom: 1px solid #eaedf0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .dot { width: 6px; height: 6px; border-radius: 50%; background: #2d6cdf; }
+  .card h2 .badge {
+    margin-left: auto; font-size: 11px; font-weight: 500;
+    padding: 2px 8px; border-radius: 10px; background: #eef4ff; color: #1c4faa;
+  }
+
+  .field { margin-bottom: 14px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 13px; }
+  .field .hint { color: #6e7781; font-size: 12px; margin-top: 4px; line-height: 1.5; }
+
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px;
+    font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    background: #fff; color: #1f2328; transition: .15s;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: #2d6cdf; box-shadow: 0 0 0 3px rgba(45,108,223,.12);
+  }
+  textarea { resize: vertical; min-height: 90px; }
+  input[type=number] { width: 120px; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .input-row { display: flex; gap: 8px; align-items: stretch; }
+  .input-row > input, .input-row > select { flex: 1; min-width: 0; }
+  .input-row > button { flex: 0 0 auto; white-space: nowrap; }
+
+  .check { display: flex; align-items: center; gap: 9px; padding: 7px 0; }
+  .check input { transform: scale(1.15); accent-color: #2d6cdf; cursor: pointer; }
+  .check label { margin: 0; font-weight: 400; cursor: pointer; }
+
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button {
+    padding: 9px 18px; border: 0; border-radius: 7px; cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: .15s;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .primary { background: #2d6cdf; color: #fff; }
+  .primary:hover:not(:disabled) { background: #255bbd; }
+  .ghost { background: #f0f3f6; color: #424a53; }
+  .ghost:hover:not(:disabled) { background: #e4e9ee; }
+  .small { padding: 8px 13px; font-size: 12px; }
+
+  .msg { padding: 10px 14px; border-radius: 7px; font-size: 13px; margin-top: 12px; display: none; |
+         line-height: 1.6; }
+  .msg.show { display: block; }
+  .msg.ok { background: #e6f7ed; color: #17603a; border: 1px solid #b5e8cc; }
+  .msg.err { background: #fff0f0; color: #a41919; border: 1px solid #ffc9c9; }
+  .msg.info { background: #eef4ff; color: #1c4faa; border: 1px solid #cddfff; }
+  .msg.warn { background: #fff8e6; color: #8a5300; border: 1px solid #ffe1b8; }
+
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 8px 14px; font-size: 13px; }
+  .kv dt { color: #6e7781; }
+  .kv dd { margin: 0; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+
+  .float-save {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,.95); backdrop-filter: blur(8px);
+    border-top: 1px solid #d8dee4; padding: 12px 20px;
+    display: flex; gap: 10px; justify-content: center; align-items: center;
+  }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; background: #eef4ff; color: #1c4faa;
+  }
+  .tag.warn { background: #fff4e5; color: #8a5300; }
+  .hidden { display: none !important; }
+
+  .status-inline {
+    font-size: 12px; color: #57606a; margin-top: 6px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot-s { width: 7px; height: 7px; border-radius: 50%; background: #8b949e; }
+  .dot-s.ok { background: #2da44e; }
+  .dot-s.err { background: #e5484d; }
+  .dot-s.wait { background: #d4a72c; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>学习通自动学习助手</h1>
+  <div class="sub">刷课自动完成，答题交给你的 API；文字不可靠时可用截图兜底。配置只存浏览器本地。</div>
+
+  <!-- ===================== 答题 API ===================== -->
+  <div class="card">
+    <h2><span class="dot"></span>答题 API</h2>
+
+    <div class="field">
+      <label>接口类型</label>
+      <select id="provider">
+        <option value="openai">OpenAI 兼容（/v1/chat/completions）</option>
+        <option value="custom">自定义（完全自己写请求体）</option>
+      </select>
+      <div class="hint">OpenAI、DeepSeek、通义、中转站、Ollama 都选「OpenAI 兼容」。</div>
+    </div>
+
+    <div class="field">
+      <label>接口地址</label>
+      <input type="text" id="endpoint" placeholder="https://api.openai.com/v1/chat/completions">
+      <div class="hint">完整 URL，要包含 <code>/chat/completions</code></div>
+    </div>
+
+    <div class="field">
+      <label>API Key</label>
+      <input type="password" id="apiKey" placeholder="sk-...">
+      <div class="hint">只存在本地 <code>chrome.storage.local</code>，不会上传。</div>
+    </div>
+
+    <!-- 模型选择：可拉取列表 -->
+    <div class="field">
+      <label>模型</label>
+      <div class="input-row">
+        <input type="text" id="model" list="modelList" placeholder="点击右侧「拉取」或直接输入">
+        <datalist id="modelList"></datalist>
+        <button class="ghost small" id="btnModels">拉取模型</button>
+      </div>
+      <div class="status-inline" id="modelStatus" style="display:none">
+        <span class="dot-s" id="modelDot"></span><span id="modelMsg"></span>
+      </div>
+      <div class="hint">
+        会请求 <code>/models</code> 端点列出可用模型。拉不到就直接手填模型名 —— 不影响使用。
+      </div>
+    </div>
+
+    <div class="field">
+      <label>模型列表地址（可选）</label>
+      <input type="text" id="modelsUrl" placeholder="留空则从接口地址自动推导">
+      <div class="hint">有些中转站的 models 端点路径不同，可在此单独指定。</div>
+    </div>
+
+    <!-- 自定义模式 -->
+    <div id="customBox" class="hidden">
+      <div class="field">
+        <label>请求体模板 <span class="tag warn">仅自定义模式</span></label>
+        <textarea id="bodyTemplate" placeholder='{
+  "model": {{model}},
+  "messages": [
+    {"role": "system", "content": {{prompt}}},
+    {"role": "user", "content": {{text}}}
+  ]
+}'></textarea>
+        <div class="hint">
+          占位符：<code>{{prompt}}</code> 系统提示、<code>{{text}}</code> 题目 JSON、
+          <code>{{full}}</code> 二者拼接、<code>{{model}}</code>、<code>{{apiKey}}</code>。
+        </div>
+      </div>
+
+      <div class="field">
+        <label>额外请求头 <span class="tag warn">仅自定义模式</span></label>
+        <textarea id="extraHeaders" placeholder='{"X-Api-Key": "xxx"}' style="min-height:60px"></textarea>
+      </div>
+
+      <div class="field">
+        <label>响应取值路径 <span class="tag warn">仅自定义模式</span></label>
+        <input type="text" id="responsePath" placeholder="例如 data.answer 或 result.content">
+        <div class="hint">留空则自动尝试 choices[0].message.content / answer / data 等常见位置。</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>温度</label>
+      <input type="number" id="temperature" step="0.1" min="0" max="2" placeholder="0.2">
+      <div class="hint">答题建议 0.1 ~ 0.3。</div>
+    </div>
+
+    <div class="field">
+      <label>自定义提示词（可选）</label>
+      <textarea id="prompt" placeholder="留空则使用内置提示词（针对思政课章节测验优化）"></textarea>
+    </div>
+
+    <div class="actions" style="margin-top:16px">
+      <button class="ghost" id="btnTestApi">测试连通</button>
+      <button class="ghost" id="btnTestQuiz">试答一题</button>
+      <span style="color:#6e7781;font-size:12px">测试用当前表单值，不需要先保存</span>
+    </div>
+    <div class="msg" id="testMsg"></div>
+  </div>
+
+  <!-- ===================== 截图解题 ===================== -->
+  <div class="card">
+    <h2>
+      <span class="dot"></span>截图解题（视觉兜底）
+      <span class="badge" id="visionBadge">未启用</span>
+    </h2>
+
+    <div class="hidden">占位</div>
+
+    <div class="check">
+      <input type="checkbox" id="visionEnabled">
+      <label for="visionEnabled">启用截图解题</label>
+    </div>
+
+    <div class="field">
+      <label>触发时机</label>
+      <select id="visionMode">
+        <option value="auto">自动判断（推荐）：文字不可靠或模型没把握时才截图</option>
+        <option value="always">总是截图：每套题都先用视觉模型看一遍</option>
+        <option value="off">从不截图：只用文字</option>
+      </select>
+      <div class="hint">
+        <b>自动判断</b>的依据有两方面：<br>
+        · 脚本侧：字体解码置信度低、题干仍是乱码、选项缺失、模型漏答题<br>
+        · 模型侧：视觉模型会自评每题置信度，低于 0.6 会标记"不确定"并跳过自动提交
+      </div>
+    </div>
+
+    <div class="check">
+      <input type="checkbox" id="visionSameApi">
+      <label for="visionSameApi">复用上面答题 API 的地址和 Key（只单独指定模型）</label>
+    </div>
+
+    <div id="visionOwnBox" class="hidden">
+      <div class="field">
+        <label>视觉 API 地址</label>
+        <input type="text" id="visionEndpoint" placeholder="https://api.openai.com/v1/chat/completions">
+      </div>
+      <div class="field">
+        <label>视觉 API Key</label>
+        <input type="password" id="visionApiKey" placeholder="留空则复用上面的">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>视觉模型</label>
+      <div class="input-row">
+        <input type="text" id="visionModel" placeholder="如 gpt-4o / qwen-vl-max / glm-4v-plus">
+        <button class="ghost small" id="btnVisionModels">拉取模型</button>
+      </div>
+      <div class="status-inline" id="visionModelStatus" style="display:none">
+        <span class="dot-s" id="visionModelDot"></span><span id="visionModelMsg"></span>
+      </div>
+      <div class="hint">必须支持图片输入。普通的纯文本模型（如 deepseek-chat）不支持，会报错。</div>
+    </div>
+
+    <div class="field">
+      <label>最多截图张数</label>
+      <input type="number" id="visionMaxShots" min="1" max="6" step="1">
+      <div class="hint">题目很长需要分屏时用。一般 1 张足够。</div>
+    </div>
+
+    <div class="actions" style="margin-top:14px">
+      <button class="ghost" id="btnTestVision">测试视觉接口</button>
+      <span style="color:#6e7781;font-size:12px">会发一张 1×1 测试图，验证模型接受图片输入</span>
+    </div>
+    <div class="msg" id="visionTestMsg"></div>
+  </div>
+
+  <!-- ===================== 作答行为 ===================== -->
+  <div class="card">
+    <h2><span class="dot"></span>作答行为</h2>
+
+    <div class="check">
+      <input type="checkbox" id="autoFill">
+      <label for="autoFill">自动把答案填进页面</label>
+    </div>
+    <div class="check">
+      <input type="checkbox" id="autoSubmit">
+      <label for="autoSubmit">自动点击「提交」（<b style="color:#c9252d">风险高，默认关闭</b>）</label>
+    </div>
+    <div class="hint" style="margin-top:8px;padding-left:28px">
+      建议保持关闭。开着的话答案一错就直接交卷。<br>
+      另外：截图解题时若视觉模型标注「不确定」，<b>仍会跳过自动提交</b>，留给你复核。
+    </div>
+  </div>
+
+  <!-- ===================== 刷课行为 ===================== -->
+  <div class="card">
+    <h2><span class="dot"></span>刷课行为</h2>
+
+    <div class="row3">
+      <div class="field">
+        <label>播放倍速</label>
+        <input type="number" id="rate" step="0.25" min="1" max="4">
+        <div class="hint">建议 ≤2.0</div>
+      </div>
+      <div class="field">
+        <label>滚动像素</label>
+        <input type="number" id="docStep" step="50" min="100" max="2000">
+        <div class="hint">文档每步滚动距离</div>
+      </div>
+      <div class="field">
+        <label>循环间隔(ms)</label>
+        <input type="number" id="loopInterval" step="100" min="800" max="10000">
+        <div class="hint">越小越快，越小越易触发风控</div>
+      </div>
+    </div>
+
+    <div class="check"><input type="checkbox" id="mute"><label for="mute">静音播放</label></div>
+    <div class="check"><input type="checkbox" id="antiPause"><label for="antiPause">防止切屏暂停</label></div>
+    <div class="check"><input type="checkbox" id="autoNext"><label for="autoNext">任务点完成后自动下一节</label></div>
+    <div class="check"><input type="checkbox" id="docAutoScroll"><label for="docAutoScroll">文档 / PPT 自动滚动</label></div>
+    <div class="check"><input type="checkbox" id="quizEnabled"><label for="quizEnabled">处理章节测验</label></div>
+    <div class="check"><input type="checkbox" id="debug"><label for="debug">控制台输出调试日志</label></div>
+  </div>
+
+  <!-- ===================== 诊断 ===================== -->
+  <div class="card">
+    <h2><span class="dot"></span>诊断</h2>
+    <div class="actions">
+      <button class="ghost" id="btnDiag">检测字体反爬</button>
+      <button class="ghost" id="btnScrape">抓取当前页题目</button>
+      <button class="ghost" id="btnShot">截图预览</button>
+    </div>
+    <div class="msg" id="diagMsg"></div>
+    <div id="diagOut" style="margin-top:14px"></div>
+    <div id="shotPreview" style="margin-top:14px"></div>
+  </div>
+
+  <!-- ===================== 关于 ===================== -->
+  <div class="card">
+    <h2><span class="dot"></span>关于</h2>
+    <dl class="kv">
+      <dt>版本</dt><dd id="ver">1.0.0</dd>
+      <dt>作用范围</dt><dd>*.chaoxing.com / *.edu.cn</dd>
+      <dt>数据存储</dt><dd>浏览器本地 chrome.storage.local</dd>
+    </dl>
+    <div class="hint" style="margin-top:12px">
+      学习通有反作弊机制，页面自身会提示"严惩刷课等作弊行为"。
+      建议倍速 ≤2.0、不要长时间静音挂后台。自动化操作属高影响行为，请自行评估风险。
+    </div>
+  </div>
+
+</div>
+
+<div class="float-save">
+  <button class="primary" id="btnSave">保存设置</button>
+  <button class="ghost" id="btnReset">恢复默认</button>
+  <span class="msg" id="saveMsg" style="margin:0"></span>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

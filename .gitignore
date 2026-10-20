@@ -1,0 +1,41 @@
+# 依赖
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# 测试产物
+tests/shot-*.png
+tests/simhei-lite.ttf
+tests/*.log
+coverage/
+.nyc_output/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.temp
+~$*
+.cache/
+
+# 构建产物
+dist/
+build/
+*.zip
+*.crx
+*.pem
+
+# 敏感信息（千万别提交）
+.env
+.env.local
+*.key
+secrets.json
+config.local.json

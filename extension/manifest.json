@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "学习通自动学习助手",
+  "version": "1.0.0",
+  "description": "超星学习通章节自动学习：视频倍速/静音/防暂停、文档自动滚动、自动切下一节；章节测验可调用自定义 API 自动作答。",
+  "minimum_chrome_version": "102",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "permissions": ["storage", "scripting", "activeTab", "tabs"],
+
+  "host_permissions": [
+    "*://*.chaoxing.com/*",
+    "*://*.edu.cn/*",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "src/background.js"
+  },
+
+  "action": {
+    "default_title": "学习通自动学习助手",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "options_page": "src/options/options.html",
+
+  "content_scripts": [
+    {
+      "matches": ["*://*.chaoxing.com/*", "*://*.edu.cn/*"],
+      "js": ["src/content/fontdecoder.js", "src/content/inject.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["*://*.chaoxing.com/*", "*://*.edu.cn/*"]
+    }
+  ]
+}

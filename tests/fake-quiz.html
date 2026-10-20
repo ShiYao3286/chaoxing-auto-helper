@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>学生学习页面</title>
+<style>
+body{font:14px/1.7 "Microsoft YaHei",sans-serif;padding:20px;background:#f6f8fa}
+.questionLi{background:#fff;border:1px solid #ddd;border-radius:8px;padding:14px;margin:12px 0}
+span[class*="num_option"]{display:block;padding:6px 10px;margin:4px 0;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer}
+span.check_answer{background:#e6f7ed;border-color:#2da44e}
+iframe{width:100%;height:60px;border:1px solid #ddd;margin-top:8px}
+button{padding:8px 18px;margin:6px}
+</style></head><body>
+<h2>章节测验</h2>
+<div class="questionLi">
+  <p>【单选题】中国革命的首要问题是？</p>
+  <span class="num_option">A 农民问题</span>
+  <span class="num_option">B 分清敌友</span>
+  <span class="num_option">C 土地问题</span>
+  <span class="num_option">D 领导权问题</span>
+</div>
+<div class="questionLi">
+  <p>【多选题】中国新民主主义革命的对象有哪些？</p>
+  <span class="num_option">A 帝国主义</span>
+  <span class="num_option">B 封建主义</span>
+  <span class="num_option">C 官僚资本主义</span>
+  <span class="num_option">D 民族资本主义</span>
+</div>
+<div class="questionLi">
+  <p>【判断题】封建主义是近代中国贫困落后和一切灾祸的总根源</p>
+  <span class="num_option">A 对</span>
+  <span class="num_option">B 错</span>
+</div>
+<div class="questionLi">
+  <p>【填空题】（）是中国新民主主义革命的首要对象</p>
+  <iframe id="ueditor_0" srcdoc="&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;"></iframe>
+</div>
+<div class="questionLi">
+  <p>【判断题】《辛丑条约》的签订使中国丧失了独立自主地位</p>
+  <span class="num_option">A 对</span>
+  <span class="num_option">B 错</span>
+</div>
+<div style="margin-top:20px"><button id="submitBtn">提交</button></div>
+<script>
+window.__clicked = [];
+document.addEventListener('click', e => {
+  const t = e.target.closest('span[class*=num_option]');
+  if (t) { t.classList.toggle('check_answer'); window.__clicked.push(t.textContent.trim()); }
+}, true);
+</script>
+</body></html>

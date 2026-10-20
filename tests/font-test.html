@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>学习通助手 · 字体解码实机测试</title>
+<style>
+  body {
+    font: 14px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    max-width: 880px; margin: 0 auto; padding: 30px 20px 90px;
+    background: #f6f8fa; color: #1f2328;
+  }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  .sub { color: #6e7781; font-size: 13px; margin-bottom: 22px; }
+
+  .card {
+    background: #fff; border: 1px solid #d8dee4; border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 14px; margin: 0 0 14px; padding-bottom: 9px;
+    border-bottom: 1px solid #eaedf0;
+  }
+
+  .case { padding: 12px 0; border-bottom: 1px dashed #eaedf0; }
+  .case:last-child { border-bottom: 0; }
+  .label { font-size: 11px; color: #8b949e; margin-bottom: 3px; }
+  .render { font-size: 19px; line-height: 1.9; word-break: break-all; }
+
+  .puzzled { font-family: "CSReal"; }
+
+  button {
+    padding: 9px 20px; border: 0; border-radius: 7px; cursor: pointer;
+    background: #2d6cdf; color: #fff; font-size: 13px; font-weight: 600;
+  }
+  button:disabled { background: #b0b8c1; cursor: wait; }
+
+  .out {
+    margin-top: 14px; font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px; white-space: pre-wrap; word-break: break-all; line-height: 1.7;
+  }
+  .ok { color: #17603a; }
+  .err { color: #c9252d; }
+  .warn { color: #8a5300; }
+  code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>字体解码实机测试</h1>
+<div class="sub">
+  本页验证解码器最关键的链路：<b>@font-face 探测 → 字体下载 → 字形渲染 → 特征比对 → 字识别</b>。
+  用真实中文字体作为 <code>@font-face</code>（与学习通同一套渲染机制），
+  解码器应当能把它渲染出来的字正确识别。
+</div>
+
+<div class="card">
+  <h2>字体状态</h2>
+  <div id="fontStatus" style="font-size:13px;color:#57606a">加载中…</div>
+</div>
+
+<div class="card">
+  <h2>测试用例</h2>
+  <div id="cases"></div>
+</div>
+
+<div class="card">
+  <h2>运行</h2>
+  <button id="btnRun">开始解码测试</button>
+  <div class="out" id="out"></div>
+</div>
+
+<div class="card">
+  <h2>诊断信息</h2>
+  <div class="out" id="diag">点上面的按钮</div>
+</div>
+
+<script>
+/* ============================================================
+ * 构造一个真正的「反爬字体」用于测试
+ *
+ * 做法：把系统 SimHei 的字体二进制读出来，转成 base64，
+ * 注册成一个独立的 @font-face。这样：
+ *   · 它是一个真实的、可被探测到的自定义字体
+ *   · 字形与 SimHei 完全一致（可验证解码器找不找得准）
+ *
+ * 注意：file:// 下 fetch 本地字体可能被 CORS 拦。
+ * 拦了就退回用 local()，并在页面上标明「降级模式」。
+ * ============================================================ */
+
+async function setupFont() {
+  const el = document.getElementById('fontStatus');
+
+  const FONT_PATHS = [
+    'simhei-lite.ttf',
+    'C:/Windows/Fonts/simhei.ttf',
+    'file:///C:/Windows/Fonts/simhei.ttf'
+  ];
+
+  for (const p of FONT_PATHS) {
+    try {
+      const resp = await fetch(p);
+      if (!resp.ok) continue;
+      const buf = await resp.arrayBuffer();
+      if (buf.byteLength < 1000) continue;
+
+      // 转 base64
+      const bytes = new Uint8Array(buf);
+      let bin = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      const b64 = btoa(bin);
+
+      const style = document.createElement('style');
+      style.textContent = `
+        @font-face {
+          font-family: "CSReal";
+          src: url("data:font/ttf;base64,${b64}") format("truetype");
+        }
+        .puzzled { font-family: "CSReal"; }
+      `;
+      document.head.appendChild(style);
+
+      await document.fonts.ready;
+      const ok = document.fonts.check('20px CSReal');
+      if (el) el.textContent = ok
+        ? '✅ 已加载真实字体（SimHei 副本），可完整测试字体探测 + 解码'
+        : '⚠ 字体注册了但浏览器未接受，测试可能不准';
+      return true;
+    } catch (e) {
+      /* 换下一个路径 */
+    }
+  }
+
+  // 降级：用 local()
+  const style = document.createElement('style');
+  style.textContent = `
+    @font-face {
+      font-family: "CSReal";
+      src: local("SimHei"), local("黑体");
+    }
+    .puzzled { font-family: "CSReal"; }
+  `;
+  document.head.appendChild(style);
+  if (el) el.textContent =
+    '⚠ 降级模式：无法读取字体文件（file:// 跨域），自动降级为 local()。' +
+    '此时字体探测会检测不到自定义字体，只能验证「不误伤」路径。' +
+    '要完整测试，请通过 http 服务打开本页。';
+  return false;
+}
+
+const CASES = [
+  '中国革命的首要问题是',
+  '新民主主义革命的对象有哪些',
+  '帝国主义封建主义官僚资本主义',
+  '民族资本主义的垄断性买办性',
+  '《辛丑条约》的签订使中国丧失了独立自主地位'
+];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, m =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+const casesEl = document.getElementById('cases');
+CASES.forEach(c => {
+  const d = document.createElement('div');
+  d.className = 'case';
+  d.innerHTML =
+    `<div class="label">DOM 文本 / 画面渲染（同字体）</div>` +
+    `<div class="render puzzled">${esc(c)}</div>`;
+  casesEl.appendChild(d);
+});
+
+// 页面加载后立即准备字体
+setupFont();
+
+document.getElementById('btnRun').onclick = async function () {
+  const btn = this;
+  const out = document.getElementById('out');
+  const diagEl = document.getElementById('diag');
+  btn.disabled = true;
+  out.textContent = '解码中…（首次要建字库，可能要几秒）\n';
+
+  try {
+    if (!window.CSFontDecoder) {
+      throw new Error('CSFontDecoder 未加载。请确认扩展已启用，然后刷新本页。');
+    }
+
+    const probe = document.querySelector('.puzzled');
+
+    const d = window.CSFontDecoder.diagnose(document);
+    diagEl.textContent = JSON.stringify({
+      可疑字体数: d.suspicious.length,
+      字体名: d.suspicious.map(f => f.family),
+      src类型: d.suspicious.map(f => f.url.slice(0, 30)),
+      系统字体: d.systemFont,
+      第一级字数: d.freqCharCount
+    }, null, 2);
+
+    const lines = [];
+    let pass = 0, fail = 0;
+
+    for (const c of CASES) {
+      const t0 = performance.now();
+      const r = await window.CSFontDecoder.decode(c, probe);
+      const ms = Math.round(performance.now() - t0);
+
+      const exact = r.text === c;
+      if (exact) pass++; else fail++;
+
+      lines.push({
+        kind: exact ? 'ok' : 'err',
+        text: (exact ? '✅ PASS  ' : '❌ FAIL  ') + ms + 'ms  ' +
+              '均分 ' + r.avgScore + '  低置信 ' + r.lowConfidence
+      });
+      lines.push({ kind: '', text: '   原文：' + c });
+      lines.push({ kind: '', text: '   解码：' + r.text });
+      if (!exact) {
+        let diff = '';
+        for (let i = 0; i < c.length; i++) diff += (c[i] === r.text[i]) ? '·' : '^';
+        lines.push({ kind: 'err', text: '   差异：' + diff });
+      }
+      lines.push({ kind: 'warn', text: '   ' + (r.reason || '') });
+      lines.push({ kind: '', text: '' });
+    }
+
+    lines.push({ kind: pass === CASES.length ? 'ok' : 'err',
+                 text: '结果：' + pass + ' 通过，' + fail + ' 失败' });
+
+    out.innerHTML = lines.map(l =>
+      l.kind === 'ok' ? `<span class="ok">${esc(l.text)}</span>` :
+      l.kind === 'err' ? `<span class="err">${esc(l.text)}</span>` :
+      l.kind === 'warn' ? `<span class="warn">${esc(l.text)}</span>` :
+      esc(l.text)
+    ).join('\n');
+
+  } catch (e) {
+    out.innerHTML = `<span class="err">错误：${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+
+</body>
+</html>
