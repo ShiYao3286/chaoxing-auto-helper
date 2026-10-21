@@ -591,14 +591,15 @@ var CSFontDecoder = (function () {
       return buf.buffer;
     }
 
-    // 优先走后台代理（绕过页面 CORS）
+    // 优先走宿主代理（绕过页面 CORS）
     let b64 = null;
     try {
-      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-        const resp = await chrome.runtime.sendMessage({ type: 'font:fetch', url });
+      const H = window.CSHost;
+      if (H && typeof H.send === 'function') {
+        const resp = await H.send('font:fetch', { url });
         if (resp && resp.ok && resp.b64) b64 = resp.b64;
       }
-    } catch { /* 后台不可用，走直连 */ }
+    } catch { /* 宿主不可用，走直连 */ }
 
     // 兜底：页面内直接取
     if (!b64) {

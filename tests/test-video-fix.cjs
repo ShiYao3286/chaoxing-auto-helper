@@ -114,9 +114,8 @@ function check(n, c, e) { if (c) { console.log('  ✅ ' + n); pass++; } else { c
     window.chrome.runtime.openOptionsPage = () => {};
   `, false);
 
-  await ev(pg, fs.readFileSync(path.join(EXT, 'src', 'content', 'fontdecoder.js'), 'utf8') + '\n;1', false);
-  await ev(pg, fs.readFileSync(path.join(EXT, 'src', 'content', 'inject.js'), 'utf8') + '\n;1', false);
-  await new Promise(r => setTimeout(r, 1500));
+  const { injectContent } = require('./lib/inject-content.cjs');
+  await injectContent(ev, pg, 1500);
 
   check('内容脚本注入', (await ev(pg, 'typeof window.CS', false)) === 'object');
 

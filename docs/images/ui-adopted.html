@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>采用方案：结构相似 · 配色自有</title>
+<style>
+  :root{
+    --cs-primary:#2d6cdf;          /* 主色：自有品牌蓝（它用 #2655fe） */
+    --cs-primary-light:#4b8bf5;    /* 渐变亮端（它用 #009bfb） */
+    --cs-grad:linear-gradient(135deg,#4b8bf5 0%,#2d6cdf 100%);  /* 135°，它用 270° */
+    --cs-ink:#141414;              /* 主文字 */
+    --cs-ink-2:#626466;            /* 次文字 */
+    --cs-line:#f0f1f3;             /* 边框 / 分隔 */
+    --cs-hover:#f7f8fa;            /* 悬停 */
+    --cs-disabled:#b9babd;         /* 禁用 */
+    --cs-ok:#2da44e;               /* 完成（自有语义色，不跟它纯蓝） */
+    --cs-warn:#b26a00;             /* 进行中 */
+    --cs-off:#8b949e;              /* 跳过 */
+    --cs-r:12px;                   /* 卡片圆角 */
+    --cs-r-sm:8px;                 /* 内元素圆角 */
+    --cs-shadow:0 8px 24px rgba(15,23,42,.10);
+  }
+  body{margin:0;padding:26px;background:#f0f2f5;
+    font-family:"PingFang SC","Microsoft YaHei",sans-serif;color:var(--cs-ink)}
+  h3{margin:0 0 12px;font-size:12px;color:#8b949e;font-weight:600;
+    letter-spacing:.6px;text-transform:uppercase}
+  .wrap{display:flex;gap:30px;align-items:flex-start}
+  .stage{background:#fff;border-radius:10px;padding:22px;box-shadow:0 1px 3px #00000012}
+
+  /* ═══════════ 悬浮面板 ═══════════ */
+  .cs-panel{width:300px;box-sizing:border-box;background:#fff;
+    border-radius:var(--cs-r);padding:12px;box-shadow:var(--cs-shadow);
+    font-size:14px}
+  .cs-panel .title-area{display:flex;align-items:center;width:100%;
+    margin-bottom:16px;position:relative}
+  .cs-panel .title-area .icon{width:24px;height:24px;margin-right:5px;
+    display:inline-flex;align-items:center;justify-content:center;font-size:15px}
+  .cs-panel .title-area .title{flex:1;font-size:16px;font-weight:600;
+    line-height:normal;background:var(--cs-grad);
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent}
+  .cs-panel .title-area .close{cursor:pointer;width:24px;height:24px;
+    display:flex;align-items:center;justify-content:center;border-radius:6px;
+    color:var(--cs-disabled);font-size:14px;line-height:1}
+  .cs-panel .title-area .close:hover{background:#ecedee}
+
+  .handle-item{display:flex;align-items:center;margin-bottom:13px}
+  .handle-item .item-left{color:var(--cs-ink-2);margin-right:20px;
+    font-size:14px;white-space:nowrap}
+  .handle-item .item-right{flex:1;display:flex;align-items:center;justify-content:flex-end}
+
+  .sw{position:relative;display:inline-block;width:40px;height:24px}
+  .sw input{opacity:0;width:0;height:0}
+  .sw .track{position:absolute;inset:0;background:#dcdfe6;border-radius:14px;
+    transition:.2s;cursor:pointer}
+  .sw .track:before{content:"";position:absolute;width:20px;height:20px;left:2px;top:2px;
+    background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px #0003}
+  .sw input:checked + .track{background:var(--cs-primary)}
+  .sw input:checked + .track:before{transform:translateX(16px)}
+
+  .num{width:64px;height:28px;box-sizing:border-box;padding:0 8px;
+    border:1px solid var(--cs-line);border-radius:var(--cs-r-sm);
+    font-size:14px;color:var(--cs-ink);text-align:center;outline:none;
+    font-family:inherit;background:#fff}
+  .num:focus{border-color:var(--cs-primary)}
+
+  .bottom-btn{display:flex;gap:8px;margin-top:15px;height:32px}
+  .btn{box-sizing:border-box;flex:1;cursor:pointer;color:var(--cs-ink);
+    background:#fff;border:1px solid var(--cs-line);border-radius:var(--cs-r-sm);
+    height:32px;display:flex;align-items:center;justify-content:center;
+    font-size:14px;font-family:inherit;gap:5px}
+  .btn:hover{background:var(--cs-hover)}
+  .btn.primary{background:var(--cs-grad);color:#fff;border-color:transparent;
+    font-weight:600}
+  .btn.primary:hover{opacity:.9}
+  .btn.disabled{color:var(--cs-disabled);background:var(--cs-hover);
+    pointer-events:none}
+  .btn.icon-only{flex:0 0 32px;padding:0;font-size:14px}
+
+  .status-box{margin-top:13px;padding-top:11px;border-top:1px solid var(--cs-line);
+    font-size:13px;color:var(--cs-ink-2)}
+  .status-box b{color:var(--cs-primary);font-weight:600}
+
+  .queue-box{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+  .qitem{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;
+    border-radius:6px;background:#f5f6fa;color:var(--cs-ink-2);font-size:12px}
+  .qitem.done{background:#e9f7ee;color:var(--cs-ok)}
+  .qitem.doing{background:#fff5e6;color:var(--cs-warn);font-weight:600}
+  .qitem.skip{background:#f5f5f5;color:var(--cs-off);text-decoration:line-through}
+  .qdot{width:5px;height:5px;border-radius:50%;background:currentColor}
+
+  .progress{height:4px;background:#f0f1f4;border-radius:2px;margin-top:12px;overflow:hidden}
+  .progress i{display:block;height:100%;width:25%;background:var(--cs-grad);
+    border-radius:2px;transition:width .35s ease}
+
+  /* ═══════════ 脚本设置弹窗 ═══════════ */
+  .cs-modal{width:588px;box-sizing:border-box;background:#fff;
+    border-radius:var(--cs-r);box-shadow:0 18px 48px rgba(15,23,42,.18);
+    overflow:hidden;font-size:14px}
+  .cs-modal .m-head{display:flex;align-items:center;padding:14px 16px 12px;
+    border-bottom:1px solid var(--cs-line)}
+  .cs-modal .m-head .title{flex:1;font-size:16px;font-weight:600;
+    background:var(--cs-grad);-webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent}
+  .cs-modal .m-head .close{width:24px;height:24px;display:flex;align-items:center;
+    justify-content:center;border-radius:6px;color:var(--cs-disabled);
+    cursor:pointer;font-size:14px}
+  .cs-modal .m-head .close:hover{background:#ecedee}
+
+  .m-body{padding:4px 16px 8px;max-height:420px;overflow:auto}
+  .sec{margin-top:14px}
+  .sec-title{display:flex;align-items:center;gap:6px;font-size:13px;
+    font-weight:600;color:var(--cs-ink);margin-bottom:10px}
+  .sec-title:before{content:"";width:3px;height:13px;border-radius:2px;
+    background:var(--cs-grad)}
+  .field{display:flex;align-items:center;margin-bottom:10px}
+  .field > label{flex:0 0 104px;color:var(--cs-ink-2);font-size:13px}
+  .field .ctl{flex:1;display:flex;align-items:center;gap:6px}
+  .txt{flex:1;height:30px;box-sizing:border-box;padding:0 9px;font-size:13px;
+    border:1px solid var(--cs-line);border-radius:var(--cs-r-sm);
+    outline:none;font-family:inherit;color:var(--cs-ink);background:#fff;
+    min-width:0}
+  .txt:focus{border-color:var(--cs-primary)}
+  .txt::placeholder{color:var(--cs-disabled)}
+  .mini{height:30px;box-sizing:border-box;padding:0 12px;font-size:13px;
+    border:1px solid var(--cs-line);border-radius:var(--cs-r-sm);
+    background:#fff;color:var(--cs-ink);cursor:pointer;font-family:inherit;
+    white-space:nowrap}
+  .mini:hover{background:var(--cs-hover)}
+  .sel{height:30px;box-sizing:border-box;padding:0 8px;font-size:13px;
+    border:1px solid var(--cs-line);border-radius:var(--cs-r-sm);
+    background:#fff;color:var(--cs-ink);font-family:inherit;outline:none}
+
+  .m-foot{display:flex;align-items:center;gap:8px;padding:12px 16px;
+    border-top:1px solid var(--cs-line);background:#fafbfc}
+  .m-foot .spacer{flex:1}
+  .m-foot .btn{flex:0 0 auto;padding:0 16px}
+  .hint{font-size:12px;color:var(--cs-ok);display:flex;align-items:center;gap:4px}
+
+  /* ═══════════ 令牌表 ═══════════ */
+  .tokens{width:100%;border-collapse:collapse;font-size:12.5px}
+  .tokens th{text-align:left;color:#8b949e;font-weight:600;padding:6px 8px;
+    border-bottom:1px solid var(--cs-line);font-size:11.5px}
+  .tokens td{padding:6px 8px;border-bottom:1px solid var(--cs-line);
+    color:var(--cs-ink-2);vertical-align:middle}
+  .tokens code{font-family:Consolas,monospace;color:#24292f;font-size:12px}
+  .chip-s{width:34px;height:20px;border-radius:5px;display:inline-block;
+    vertical-align:middle;box-shadow:inset 0 0 0 1px #0000000f}
+  .diff{font-size:12px;color:var(--cs-warn);background:#fff5e6;
+    padding:2px 6px;border-radius:5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ────────── 1. 悬浮面板 ────────── -->
+  <div>
+    <h3>① 悬浮面板（扩展 + 脚本共用）</h3>
+    <div class="stage">
+      <div class="cs-panel">
+        <div class="title-area">
+          <span class="icon">🎓</span>
+          <span class="title">学习通自动学习</span>
+          <span class="close">✕</span>
+        </div>
+
+        <div class="handle-item">
+          <span class="item-left">播放倍速</span>
+          <span class="item-right"><input class="num" type="number" value="2" step="0.25"></span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">静音播放</span>
+          <span class="item-right"><label class="sw"><input type="checkbox" checked><span class="track"></span></label></span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">自动下一节</span>
+          <span class="item-right"><label class="sw"><input type="checkbox"><span class="track"></span></label></span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">文档滚动</span>
+          <span class="item-right"><label class="sw"><input type="checkbox" checked><span class="track"></span></label></span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">自动作答</span>
+          <span class="item-right"><label class="sw"><input type="checkbox" checked><span class="track"></span></label></span>
+        </div>
+
+        <div class="bottom-btn">
+          <span class="btn primary">▶ 开始</span>
+          <span class="btn">■ 停止</span>
+          <span class="btn icon-only">⚙</span>
+        </div>
+
+        <div class="status-box">状态：<b>任务 1/4 · 当前：测验</b></div>
+        <div class="queue-box">
+          <span class="qitem done"><span class="qdot"></span>视频 ✓</span>
+          <span class="qitem doing"><span class="qdot"></span>测验 …</span>
+          <span class="qitem doing"><span class="qdot"></span>PDF …</span>
+          <span class="qitem skip"><span class="qdot"></span>live ⏭</span>
+        </div>
+        <div class="progress"><i></i></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────── 2. 设置弹窗 ────────── -->
+  <div>
+    <h3>② 设置弹窗（脚本版需要，扩展设置页复用同一套令牌）</h3>
+    <div class="stage">
+      <div class="cs-modal">
+        <div class="m-head">
+          <span class="title">设置 · 学习通自动学习</span>
+          <span class="close">✕</span>
+        </div>
+        <div class="m-body">
+          <div class="sec">
+            <div class="sec-title">答题 API</div>
+            <div class="field"><label>接口地址</label><div class="ctl">
+              <input class="txt" placeholder="https://api.deepseek.com/v1/chat/completions">
+            </div></div>
+            <div class="field"><label>API Key</label><div class="ctl">
+              <input class="txt" type="password" placeholder="sk-••••••••••••">
+            </div></div>
+            <div class="field"><label>模型</label><div class="ctl">
+              <input class="txt" placeholder="deepseek-chat">
+              <span class="mini">拉取模型</span>
+            </div></div>
+            <div class="field"><label>temperature</label><div class="ctl">
+              <input class="num" value="0.2" step="0.1">
+              <span class="hint">✅ 连通正常</span>
+            </div></div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">视觉 / 截图兜底</div>
+            <div class="field"><label>启用视觉</label><div class="ctl">
+              <label class="sw"><input type="checkbox" checked><span class="track"></span></label>
+            </div></div>
+            <div class="field"><label>判断模式</label><div class="ctl">
+              <select class="sel"><option>自动（推荐）</option><option>总是用视觉</option><option>关闭</option></select>
+            </div></div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-title">行为</div>
+            <div class="field"><label>自动作答</label><div class="ctl">
+              <label class="sw"><input type="checkbox" checked><span class="track"></span></label>
+            </div></div>
+            <div class="field"><label>自动提交</label><div class="ctl">
+              <label class="sw"><input type="checkbox"><span class="track"></span></label>
+              <span style="font-size:12px;color:var(--cs-disabled)">默认关闭，有题没把握会暂存</span>
+            </div></div>
+            <div class="field"><label>截图增强</label><div class="ctl">
+              <label class="sw"><input type="checkbox"><span class="track"></span></label>
+              <span style="font-size:12px;color:var(--cs-disabled)">DOM→图片，仅脚本版</span>
+            </div></div>
+          </div>
+        </div>
+        <div class="m-foot">
+          <span class="mini">测试连通</span>
+          <span class="mini">拉取模型</span>
+          <span class="spacer"></span>
+          <span class="btn">取消</span>
+          <span class="btn primary">保存</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────── 3. 令牌表 ────────── -->
+  <div style="width:352px">
+    <h3>③ 设计令牌与差异</h3>
+    <div class="stage">
+      <table class="tokens">
+        <tr><th style="width:56px">色块</th><th>令牌</th><th>值</th><th>和它的差异</th></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-primary)"></span></td>
+          <td>主色</td><td><code>#2d6cdf</code></td>
+          <td><span class="diff">它 #2655fe</span></td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-primary-light)"></span></td>
+          <td>渐变亮端</td><td><code>#4b8bf5</code></td>
+          <td><span class="diff">它 #009bfb</span></td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-grad)"></span></td>
+          <td>渐变角度</td><td><code>135°</code></td>
+          <td><span class="diff">它 270°</span></td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-ok)"></span></td>
+          <td>完成</td><td><code>#2da44e</code></td>
+          <td><span class="diff">它全用蓝</span></td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-warn)"></span></td>
+          <td>进行中</td><td><code>#b26a00</code></td>
+          <td><span class="diff">它全用蓝</span></td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-ink)"></span></td>
+          <td>主文字</td><td><code>#141414</code></td>
+          <td>一致（通用诚色）</td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-ink-2)"></span></td>
+          <td>次文字</td><td><code>#626466</code></td>
+          <td>一致</td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-line)"></span></td>
+          <td>边框 / 分隔</td><td><code>#f0f1f3</code></td>
+          <td><span class="diff">它 #f5f5f5（更淡）</span></td></tr>
+        <tr><td><span class="chip-s" style="background:#dcdfe6"></span></td>
+          <td>开关关态</td><td><code>#dcdfe6</code></td>
+          <td>Element 默认值</td></tr>
+        <tr><td><span class="chip-s" style="background:var(--cs-shadow)"></span></td>
+          <td>卡片阴影</td><td colspan="2"><code>0 8px 24px rgba(15,23,42,.10)</code></td></tr>
+      </table>
+
+      <p style="font-size:12px;color:#8b949e;line-height:1.85;margin:14px 0 0">
+        <b style="color:#2d6cdf">相同（结构语言）</b>：12px 卡片圆角 ·
+        左标签右控件 · Element 开关 40×24 · 32px 按钮 · 300px 面板 · 标题渐变文字<br>
+        <b style="color:#b26a00">不同（自有识别）</b>：主色 / 渐变端点 / 渐变角度 /
+        语义色（绿橙灰）· 按钮带图标 · 边框更实<br>
+        <span style="color:var(--cs-disabled)">通用设计参数（圆角、间距、字号）与开源
+        Element 控件不受版权保护；不复用它的 CSS 代码、图标资产与类名。</span>
+      </p>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

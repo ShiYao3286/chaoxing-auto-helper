@@ -106,7 +106,38 @@ jobs:
           echo "版本号: $VERSION"
           echo "标签:   $TAG"
 
-      - name: 打包
+      - name: 构建油猴脚本
+        run: |
+          set -euo pipefail
+          echo "::group::构建 userscript"
+          node build/build-userscript.cjs
+          echo "::endgroup::"
+
+          echo "::group::产物自检"
+          F='userscript/学习通自动学习助手.user.js'
+          if [ ! -f "$F" ]; then
+            echo "::error::找不到油猴脚本产物"
+            exit 1
+          fi
+          # 头部必须是合法 userscript 头
+          head -1 "$F" | grep -q '^// ==UserScript==' \
+            || { echo "::error::产物缺少 UserScript 头"; exit 1; }
+          # 版本必须与 manifest 一致（构建脚本已校验，这里再兜一层）
+          UV=$(grep -m1 '^// @version' "$F" | awk '{print $3}')
+          MV=$(node -p "require('./extension/manifest.json').version")
+          if [ "$UV" != "$MV" ]; then
+            echo "::error::版本不一致：产物 $UV / manifest $MV"
+            exit 1
+          fi
+          # 不得残留 chrome.* 调用
+          if grep -vE '^\s*(//|\*)' "$F" | grep -qE 'chrome\.(runtime|storage|tabs|windows)'; then
+            echo "::error::产物里残留 chrome.* 调用"
+            exit 1
+          fi
+          echo "版本 $UV，大小 $(du -h "$F" | cut -f1)"
+          echo "::endgroup::"
+
+      - name: 打包扩展
         run: |
           set -euo pipefail
           echo "::group::生成 zip"
@@ -138,7 +169,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: chaoxing-auto-helper-${{ steps.ver.outputs.version }}
-          path: chaoxing-auto-helper.zip
+          path: |
+            chaoxing-auto-helper.zip
+            userscript/学习通自动学习助手.user.js
           retention-days: 90
 
       - name: 创建 Release
@@ -151,9 +184,11 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## 下载安装
+            ## 两种装法，同一份内核
 
-            1. 下载下面的 `chaoxing-auto-helper.zip`
+            ### 方式一：扩展版（全功能，推荐）
+
+            1. 下载 `chaoxing-auto-helper.zip`
             2. **解压**到任意目录（解压后第一层应能看到 `manifest.json`）
             3. 打开 `edge://extensions/`（Chrome 用 `chrome://extensions/`）
             4. 打开左下角「开发人员模式」
@@ -161,16 +196,29 @@ jobs:
             6. 刷新已打开的学习通页面
 
             > 选目录时注意：要选到**直接包含 `manifest.json`** 的那一层。
-            > 如果你的解压工具多套了一层（如 `chaoxing-auto-helper/extension/`），
-            > 请进入 `extension` 再选。
+
+            ### 方式二：油猴脚本（单文件）
+
+            1. 先装 [Tampermonkey](https://microsoftedge.microsoft.com/addons)（或暴力猴）
+            2. 下载 `学习通自动学习助手.user.js`，管理器会自动弹出安装页
+            3. **首次调 API 时弹窗问「要访问 xxx 吗」，必须点「总是允许」**，否则请求发不出去
+            4. 点油猴图标 → 「学习通自动学习助手」→「⚙ 设置」填 API
+
+            ### 两者差异
+
+            | 能力 | 扩展版 | 脚本版 |
+            |---|---|---|
+            | 任务队列 / 任务点判定 / 作答 / 提交安全网 | ✅ | ✅ |
+            | 真实截图 | ✅ | ❌ 降级为文字重绘 |
+            | 跨标签页保持运行 | ✅ | ❌ 只在本页 |
 
             ## 使用
 
-            1. 点工具栏扩展图标 → 设置
-            2. 填 API 地址和 Key，点「拉取模型」选一个模型
-            3. 点「测试连通」确认可用
-            4. 打开学习通章节页，右下角面板点「开始」
+            1. 打开设置，填 API 地址和 Key，点「拉取模型」选一个模型
+            2. 点「测试连通」确认可用
+            3. 打开学习通章节页，右下角面板点「开始」
 
-            详细文档见 [README](https://github.com/${{ github.repository }}#readme)。
+            详细文档见 [README](https://github.com/${{ github.repository }}#readme)
+            和 [脚本版说明](https://github.com/${{ github.repository }}/blob/main/docs/脚本版说明.md)。
 
             版本：`${{ steps.ver.outputs.version }}`

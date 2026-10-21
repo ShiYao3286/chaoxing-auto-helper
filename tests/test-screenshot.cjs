@@ -21,8 +21,7 @@ function findExtRoot() {
 }
 
 const EXT = findExtRoot();
-const FD_PATH = path.join(EXT, 'src', 'content', 'fontdecoder.js');
-const INJ_PATH = path.join(EXT, 'src', 'content', 'inject.js');
+const { injectContent } = require('./lib/inject-content.cjs');
 
 let socket = null, idCounter = 0;
 const pending = new Map();
@@ -204,11 +203,7 @@ function check(n, c, e) { if (c) { console.log('  ✅ ' + n); pass++; } else { c
   `, false);
 
   const fs = require('fs');
-  const fd = fs.readFileSync(FD_PATH, 'utf8');
-  const inj = fs.readFileSync(INJ_PATH, 'utf8');
-  await ev(pg, fd + '\n;1', false);
-  await ev(pg, inj + '\n;1', false);
-  await new Promise(r => setTimeout(r, 1200));
+  await injectContent(ev, pg, 1200);
 
   // 测试降级重绘路径（因为 stub 的 page:screenshot 会失败）
   const cap = await ev(pg, `(async()=>{

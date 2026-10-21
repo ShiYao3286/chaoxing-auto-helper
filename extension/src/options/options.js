@@ -408,7 +408,7 @@ async function testVision() {
       return;
     }
 
-    showMsg(msg, `✅ 视觉接口正常。模型：${r.model}，返回了 ${r.answers} 条答案结构。`, 'ok');
+    showMsg(msg, `✅ 视觉接口正常。模型：${r.model}，返回了 ${r.answerCount != null ? r.answerCount : r.answers?.length} 条答案结构。`, 'ok');
   } catch (e) {
     showMsg(msg, '❌ ' + e.message, 'err');
   } finally {

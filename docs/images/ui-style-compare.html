@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UI 风格对照</title>
+<style>
+  body{margin:0;padding:24px;background:#f0f2f5;
+    font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+  .wrap{display:flex;gap:28px;align-items:flex-start}
+  .col{flex:1}
+  .col > h3{margin:0 0 12px;font-size:13px;color:#57606a;font-weight:600;
+    letter-spacing:.5px;text-transform:uppercase}
+  .stage{background:#fff;border-radius:8px;padding:20px;min-height:430px;
+    box-shadow:0 1px 3px #0000000f}
+
+  /* ══════════ A. 当前版（v1.3.0）══════════ */
+  #cs-panel{width:300px;background:#fff;border-radius:8px;
+    box-shadow:0 4px 16px #0000001f;overflow:hidden;font-size:12.5px;color:#24292f}
+  #cs-panel .cs-head{background:linear-gradient(90deg,#2d6cdf,#3f8cff);color:#fff;
+    padding:8px 12px;display:flex;justify-content:space-between;align-items:center;
+    font-size:13px;font-weight:600}
+  #cs-panel .cs-body{padding:10px 12px 12px}
+  #cs-panel .cs-row{display:flex;justify-content:space-between;align-items:center;margin:6px 0}
+  #cs-panel .cs-row label{color:#57606a}
+  #cs-panel .cs-row input[type=number]{width:56px;padding:2px 6px;font-size:12px;
+    border:1px solid #d0d7de;border-radius:4px}
+  #cs-panel .cs-btns{display:flex;gap:6px;margin-top:10px}
+  #cs-panel .cs-btns button{flex:1;padding:6px 0;font-size:12px;border-radius:6px;
+    border:1px solid transparent;cursor:pointer}
+  #cs-panel .cs-start{background:#2d6cdf;color:#fff;border-color:#2d6cdf}
+  #cs-panel .cs-stop{background:#cf222e;color:#fff;border-color:#cf222e}
+  #cs-panel .cs-gear{flex:0 0 34px;background:#f6f8fa;border-color:#d0d7de}
+  #cs-panel .cs-status{margin-top:8px;padding-top:8px;border-top:1px dashed #e1e5ea;
+    font-size:11.5px;color:#57606a}
+  #cs-panel .cs-status b{color:#2d6cdf}
+  #cs-panel .cs-queue{margin-top:8px;padding-top:8px;border-top:1px dashed #e1e5ea;
+    display:flex;flex-wrap:wrap;gap:5px;font-size:11.5px}
+  #cs-panel .cs-qitem{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;
+    border-radius:10px;background:#f3f5f8;color:#57606a}
+  #cs-panel .cs-qitem.done{background:#e7f6ec;color:#2da44e}
+  #cs-panel .cs-qitem.doing{background:#fff4e0;color:#b26a00;font-weight:600}
+  #cs-panel .cs-qitem.skip{background:#f0f0f0;color:#8b949e;text-decoration:line-through}
+  #cs-panel .cs-qdot{width:6px;height:6px;border-radius:50%;background:currentColor}
+  #cs-panel .cs-bar{height:4px;background:#eef1f4;border-radius:2px;margin-top:8px;overflow:hidden}
+  #cs-panel .cs-bar i{display:block;height:100%;width:25%;
+    background:linear-gradient(90deg,#2d6cdf,#3f8cff);border-radius:2px}
+
+  /* ══════════ B. 搜题酱风格（仅设计语言）══════════ */
+  .dx-panel{width:300px;box-sizing:border-box;background:#fff;border-radius:12px;
+    padding:12px;box-shadow:0 8px 24px #0000001f;
+    font-family:"PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+  .dx-panel .title-area{display:flex;align-items:center;width:100%;
+    margin-bottom:16px;position:relative}
+  .dx-panel .title-area .icon{width:24px;height:24px;margin-right:4px;
+    display:inline-flex;align-items:center;justify-content:center;font-size:15px}
+  .dx-panel .title-area .title{flex:1;font-size:16px;font-weight:600;line-height:normal;
+    background:linear-gradient(270deg,#009bfb 0%,#2655fe 100%);
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent}
+  .dx-panel .title-area .close{cursor:pointer;width:24px;height:24px;
+    display:flex;align-items:center;justify-content:center;border-radius:3px;
+    color:#b9babd;font-size:15px;line-height:1}
+  .dx-panel .title-area .close:hover{background:#ecedee}
+
+  .dx-panel .handle-item{display:flex;align-items:center;font-size:14px;margin-bottom:14px}
+  .dx-panel .handle-item .item-left{color:#626466;margin-right:24px;font-size:14px;
+    white-space:nowrap}
+  .dx-panel .handle-item .item-right{flex:1;display:flex;align-items:center;
+    justify-content:flex-end}
+
+  /* Element 风开关 */
+  .dx-switch{position:relative;display:inline-block;width:40px;height:20px}
+  .dx-switch input{opacity:0;width:0;height:0}
+  .dx-switch .track{position:absolute;inset:0;background:#dcdfe6;
+    border-radius:10px;transition:.2s;cursor:pointer}
+  .dx-switch .track:before{content:"";position:absolute;width:16px;height:16px;
+    left:2px;top:2px;background:#fff;border-radius:50%;
+    transition:.2s;box-shadow:0 1px 3px #0003}
+  .dx-switch input:checked + .track{background:#2655fe}
+  .dx-switch input:checked + .track:before{transform:translateX(20px)}
+
+  .dx-num{width:64px;height:28px;box-sizing:border-box;padding:0 8px;
+    border:1px solid #edeff0;border-radius:8px;font-size:14px;color:#141414;
+    text-align:center;outline:none;font-family:inherit}
+  .dx-num:focus{border-color:#2655fe}
+
+  .dx-panel .bottom-btn{display:flex;gap:8px;margin-top:16px;
+    box-sizing:border-box;height:32px}
+  .dx-panel .btn-item{box-sizing:border-box;flex:1;cursor:pointer;color:#141414;
+    background:#fff;border:1px solid #f5f5f5;border-radius:10px;height:32px;
+    display:flex;align-items:center;justify-content:center;padding:10px;
+    font-size:14px;font-family:inherit}
+  .dx-panel .btn-item:hover{background:#f7f7f7}
+  .dx-panel .btn-item.primary{background:linear-gradient(90deg,#009bfb,#2655fe);
+    color:#fff;border-color:transparent;font-weight:600}
+  .dx-panel .btn-item.primary:hover{opacity:.9}
+  .dx-panel .btn-item.icon-only{flex:0 0 32px;padding:0}
+
+  .dx-panel .status-box{margin-top:14px;padding-top:12px;
+    border-top:1px solid #f5f5f5;font-size:13px;color:#626466}
+  .dx-panel .status-box b{color:#2655fe;font-weight:600}
+
+  .dx-panel .queue-box{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+  .dx-panel .qitem{display:inline-flex;align-items:center;gap:4px;
+    padding:3px 8px;border-radius:8px;background:#f5f6fa;
+    color:#626466;font-size:12px}
+  .dx-panel .qitem.done{background:#e8f3ff;color:#2655fe}
+  .dx-panel .qitem.doing{background:#e8f3ff;color:#009bfb;font-weight:600}
+  .dx-panel .qitem.skip{background:#f5f5f5;color:#b9babd;text-decoration:line-through}
+  .dx-panel .qdot{width:5px;height:5px;border-radius:50%;background:currentColor}
+
+  .dx-panel .progress{height:4px;background:#f5f6fa;border-radius:2px;
+    margin-top:12px;overflow:hidden}
+  .dx-panel .progress i{display:block;height:100%;width:25%;
+    background:linear-gradient(90deg,#009bfb,#2655fe);border-radius:2px}
+
+  /* ══════════ C. 色板 ══════════ */
+  .swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+  .sw{width:104px}
+  .sw .chip{height:44px;border-radius:8px;box-shadow:inset 0 0 0 1px #0000000f}
+  .sw .code{font-family:Consolas,monospace;font-size:11px;color:#57606a;margin-top:4px}
+  .sw .name{font-size:11px;color:#8b949e}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="col">
+    <h3>A · 当前版 v1.3.0</h3>
+    <div class="stage">
+      <div id="cs-panel">
+        <div class="cs-head"><span>学习通自动学习</span><span>—</span></div>
+        <div class="cs-body">
+          <div class="cs-row"><label>倍速</label><input type="number" value="2" step="0.25"></div>
+          <div class="cs-row"><label>静音</label><span>☑</span></div>
+          <div class="cs-row"><label>自动下一节</label><span>☐</span></div>
+          <div class="cs-row"><label>文档滚动</label><span>☑</span></div>
+          <div class="cs-row"><label>自动作答</label><span>☑</span></div>
+          <div class="cs-btns">
+            <button class="cs-start">开始</button>
+            <button class="cs-stop">停止</button>
+            <button class="cs-gear">⚙</button>
+          </div>
+          <div class="cs-status">状态：<b>任务 1/4 · 当前：测验</b></div>
+          <div class="cs-queue">
+            <span class="cs-qitem done"><span class="cs-qdot"></span>视频 ✓</span>
+            <span class="cs-qitem doing"><span class="cs-qdot"></span>测验 …</span>
+            <span class="cs-qitem doing"><span class="cs-qdot"></span>PDF …</span>
+            <span class="cs-qitem skip"><span class="cs-qdot"></span>live ⏭</span>
+          </div>
+          <div class="cs-bar"><i></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <h3>B · 搜题酱设计语言</h3>
+    <div class="stage">
+      <div class="dx-panel">
+        <div class="title-area">
+          <span class="icon">🎓</span>
+          <span class="title">学习通自动学习</span>
+          <span class="close">✕</span>
+        </div>
+
+        <div class="handle-item">
+          <span class="item-left">播放倍速</span>
+          <span class="item-right"><input class="dx-num" type="number" value="2" step="0.25"></span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">静音播放</span>
+          <span class="item-right">
+            <label class="dx-switch"><input type="checkbox" checked><span class="track"></span></label>
+          </span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">自动下一节</span>
+          <span class="item-right">
+            <label class="dx-switch"><input type="checkbox"><span class="track"></span></label>
+          </span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">文档滚动</span>
+          <span class="item-right">
+            <label class="dx-switch"><input type="checkbox" checked><span class="track"></span></label>
+          </span>
+        </div>
+        <div class="handle-item">
+          <span class="item-left">自动作答</span>
+          <span class="item-right">
+            <label class="dx-switch"><input type="checkbox" checked><span class="track"></span></label>
+          </span>
+        </div>
+
+        <div class="bottom-btn">
+          <span class="btn-item primary">开始学习</span>
+          <span class="btn-item">停止</span>
+          <span class="btn-item icon-only">⚙</span>
+        </div>
+
+        <div class="status-box">状态：<b>任务 1/4 · 当前：测验</b></div>
+        <div class="queue-box">
+          <span class="qitem done"><span class="qdot"></span>视频 ✓</span>
+          <span class="qitem doing"><span class="qdot"></span>测验 …</span>
+          <span class="qitem doing"><span class="qdot"></span>PDF …</span>
+          <span class="qitem skip"><span class="qdot"></span>live ⏭</span>
+        </div>
+        <div class="progress"><i></i></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col">
+    <h3>C · 设计令牌（从它 CSS 提取）</h3>
+    <div class="stage">
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#2655fe"></div>
+          <div class="code">#2655fe</div><div class="name">主色 / 开关选中</div></div>
+        <div class="sw"><div class="chip" style="background:#009bfb"></div>
+          <div class="code">#009bfb</div><div class="name">渐变副色</div></div>
+        <div class="sw"><div class="chip" style="background:#141414"></div>
+          <div class="code">#141414</div><div class="name">主文字</div></div>
+        <div class="sw"><div class="chip" style="background:#626466"></div>
+          <div class="code">#626466</div><div class="name">次文字 / 标签</div></div>
+        <div class="sw"><div class="chip" style="background:#f5f5f5"></div>
+          <div class="code">#f5f5f5</div><div class="name">边框 / 分隔</div></div>
+        <div class="sw"><div class="chip" style="background:#f7f7f7"></div>
+          <div class="code">#f7f7f7</div><div class="name">悬停底色</div></div>
+        <div class="sw"><div class="chip" style="background:#ecedee"></div>
+          <div class="code">#ecedee</div><div class="name">按钮悬停</div></div>
+        <div class="sw"><div class="chip" style="background:#b9babd"></div>
+          <div class="code">#b9babd</div><div class="name">禁用 / 关闭图标</div></div>
+        <div class="sw"><div class="chip" style="background:linear-gradient(33deg,#fff8f0,#dbe9ff,#f3e8ff)"></div>
+          <div class="code">半径 12px</div><div class="name">卡片 / 阴影 #0000001f</div></div>
+        <div class="sw"><div class="chip" style="background:linear-gradient(90deg,#009bfb,#2655fe)"></div>
+          <div class="code">270deg 渐变</div><div class="name">标题 / 主按钮</div></div>
+      </div>
+      <p style="font-size:12px;color:#8b949e;line-height:1.7;margin-top:18px">
+        面板宽度 <b style="color:#2655fe">300px</b>（与我们当前一致）· 固定右下角
+        <code style="background:#f5f5f5;padding:1px 4px;border-radius:3px">bottom:20px;right:20px</code><br>
+        卡片：白底 + <b style="color:#2655fe">12px</b> 圆角 + 柔和阴影<br>
+        标题：16px / 600 / 蓝青渐变文字<br>
+        控件：Element-UI 风格开关（40×20）+ 32px 圆角按钮<br>
+        行距节奏：标签左、控件右，14px，行内 <code style="background:#f5f5f5;padding:1px 4px;border-radius:3px">margin-bottom:14px</code>
+      </p>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

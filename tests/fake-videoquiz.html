@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>视频弹题测试</title>
+<style>
+body{font:14px/1.6 "Microsoft YaHei",sans-serif;padding:16px;background:#f6f8fa;margin:0}
+#videoWrap{position:relative;background:#000;border-radius:8px;overflow:hidden}
+video{width:100%;max-height:280px;display:block}
+#quizMask{position:absolute;inset:0;background:rgba(0,0,0,.72);display:none;
+  align-items:center;justify-content:center;padding:20px}
+#quizMask.show{display:flex}
+.x-container-default{background:#fff;border-radius:10px;padding:18px 22px;max-width:560px;width:100%}
+.ans-videoquiz .tkTopic{font-weight:600;margin-bottom:14px;font-size:15px;line-height:1.5}
+.ans-videoquiz-opt{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;margin:7px 0;
+  border:1px solid #dde3ea;border-radius:7px;cursor:pointer;transition:.15s}
+.ans-videoquiz-opt:hover{background:#f3f7ff;border-color:#8ab4f8}
+.ans-videoquiz-opt input{margin-top:3px;cursor:pointer}
+.btns{margin-top:16px;text-align:right}
+.btns button{padding:8px 22px;border:0;border-radius:6px;background:#2d6cdf;color:#fff;
+  cursor:pointer;font-size:14px}
+#videoquiz-continue,#knowledgeBack{display:none;margin-left:8px;background:#2da44e}
+#videoquiz-continue.show,#knowledgeBack.show{display:inline-block}
+#spanNot,#spanNotBackPoint{display:none;color:#e5484d;font-size:13px;margin-top:10px}
+#spanNot.show,#spanNotBackPoint.show{display:block}
+.ctrl{margin-top:14px;padding:10px;background:#fff;border-radius:8px;border:1px solid #e2e8f0}
+.ctrl button{padding:6px 14px;margin-right:8px;border:1px solid #d0d7de;border-radius:5px;
+  background:#fff;cursor:pointer}
+.ctrl button:hover{background:#f0f3f6}
+#log{margin-top:10px;padding:10px;background:#1f2328;color:#c9d1d9;border-radius:8px;
+  font:12px/1.6 Consolas,monospace;max-height:180px;overflow:auto;white-space:pre-wrap}
+</style></head><body>
+
+<div id="videoWrap">
+  <video id="v" muted loop playsinline src="/sample.mp4"></video>
+
+  <!-- 视频弹题（模拟学习通结构） -->
+  <div id="quizMask">
+    <div class="x-container-default">
+      <div class="ans-videoquiz">
+        <div class="tkTopic">【单选题】中国革命的首要问题是？</div>
+        <label class="ans-videoquiz-opt">
+          <input type="radio" name="ans-videoquiz-opt" value="A">
+          <span>A、农民问题</span>
+        </label>
+        <label class="ans-videoquiz-opt">
+          <input type="radio" name="ans-videoquiz-opt" value="B">
+          <span>B、分清敌友</span>
+        </label>
+        <label class="ans-videoquiz-opt">
+          <input type="radio" name="ans-videoquiz-opt" value="C">
+          <span>C、土地问题</span>
+        </label>
+        <label class="ans-videoquiz-opt">
+          <input type="radio" name="ans-videoquiz-opt" value="D">
+          <span>D、领导权问题</span>
+        </label>
+      </div>
+      <div id="spanNot">答错了，请重试</div>
+      <div id="spanNotBackPoint">未答对</div>
+      <div class="btns">
+        <button id="videoquiz-submit">提交</button>
+        <button id="videoquiz-continue">继续播放</button>
+        <button id="knowledgeBack">返回知识点</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ctrl">
+  <button id="btnShow">弹出题目</button>
+  <button id="btnHide">关闭题目</button>
+  <span style="color:#666;font-size:13px">正确答案：B（分清敌友）</span>
+</div>
+
+<div id="log"></div>
+
+<script>
+window.__submitted = [];
+window.__correct = 'B';
+window.__attempts = 0;
+
+const mask = document.getElementById('quizMask');
+const v = document.getElementById('v');
+const logEl = document.getElementById('log');
+
+function log(...a) {
+  const line = a.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ');
+  logEl.textContent += line + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/* 弹出题目：暂停视频 */
+document.getElementById('btnShow').onclick = () => {
+  mask.classList.add('show');
+  v.pause();
+  document.getElementById('spanNot').classList.remove('show');
+  document.getElementById('spanNotBackPoint').classList.remove('show');
+  document.getElementById('videoquiz-continue').classList.remove('show');
+  document.getElementById('knowledgeBack').classList.remove('show');
+  document.getElementById('videoquiz-submit').style.display = '';
+  document.querySelectorAll('input[name="ans-videoquiz-opt"]').forEach(i => i.checked = false);
+  window.__attempts = 0;
+  log('弹题已显示，视频已暂停');
+};
+
+document.getElementById('btnHide').onclick = () => {
+  mask.classList.remove('show');
+  v.play().catch(() => {});
+  log('弹题已关闭');
+};
+
+/* 提交逻辑（模拟真实行为） */
+document.getElementById('videoquiz-submit').onclick = () => {
+  window.__attempts++;
+  const picked = [...document.querySelectorAll('input[name="ans-videoquiz-opt"]')]
+    .filter(i => i.checked)
+    .map(i => i.value);
+
+  window.__submitted.push(picked.join(''));
+  log('提交第 ' + window.__attempts + ' 次，选了: ' + (picked.join('') || '(未选)'));
+
+  const ok = picked.length === 1 && picked[0] === window.__correct;
+
+  if (ok) {
+    log('✅ 答对了');
+    document.getElementById('videoquiz-submit').style.display = 'none';
+    document.getElementById('videoquiz-continue').classList.add('show');
+    document.getElementById('spanNot').classList.remove('show');
+    document.getElementById('spanNotBackPoint').classList.remove('show');
+  } else {
+    log('❌ 答错了');
+    document.getElementById('spanNot').classList.add('show');
+    if (window.__attempts >= 2) {
+      // 第二次还错，切到"返回知识点"模式
+      document.getElementById('videoquiz-submit').style.display = 'none';
+      document.getElementById('knowledgeBack').classList.add('show');
+    }
+  }
+};
+
+/* 继续播放 */
+document.getElementById('videoquiz-continue').onclick = () => {
+  log('点击「继续播放」');
+  mask.classList.remove('show');
+  v.play().catch(() => {});
+};
+
+document.getElementById('knowledgeBack').onclick = () => {
+  log('点击「返回知识点」');
+  mask.classList.remove('show');
+  v.play().catch(() => {});
+};
+
+/* 3 秒后自动弹一次，模拟真实场景 */
+setTimeout(() => {
+  v.play().catch(() => {});
+}, 500);
+
+log('测试页就绪，正确答案 B');
+</script>
+</body></html>

@@ -1,15 +1,38 @@
 # 学习通自动学习助手
 
-> 超星学习通章节自动学习 + 测验自动作答的 Edge/Chrome 扩展（Manifest V3）。
+> 超星学习通章节自动学习 + 测验自动作答。**两种装法，同一份内核**：
+> ① Edge/Chrome 扩展（Manifest V3）② 油猴用户脚本（单文件）。
 > 刷课全自动，答题走你自己的 API；文字解不出来时自动改用截图解题。
 
 ![Manifest](https://img.shields.io/badge/manifest-v3-blue)
 ![Chrome](https://img.shields.io/badge/Chrome-102%2B-green)
 ![Edge](https://img.shields.io/badge/Edge-102%2B-green)
+![Userscript](https://img.shields.io/badge/userscript-Tampermonkey-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Release](https://img.shields.io/github/v/release/ShiYao3286/chaoxing-auto-helper)](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest)
 
-**[⬇ 下载最新版](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest)** · 解压后用「加载解压缩的扩展」装
+**[⬇ 下载最新版](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest)**
+
+---
+
+## 两种形态怎么选
+
+| | **扩展版** | **脚本版** |
+|---|---|---|
+| 装法 | 解压 + 「加载解压缩的扩展」 | 装 Tampermonkey + 安装 `.user.js` |
+| 入口 | 工具栏图标 → 设置页 | 油猴菜单 → 页内弹窗 |
+| 任务队列 / 任务点判定 | ✅ | ✅ |
+| 视频 / 文档 / 自动下一节 | ✅ | ✅ |
+| 抓题 / 字体解码 / 作答 / 填写 | ✅ | ✅ |
+| 提交安全网（暂存而非硬交） | ✅ | ✅ |
+| 视频弹题 | ✅ | ✅ |
+| **真实截图** | ✅ | ❌ 降级为文字重绘 |
+| **跨标签页保持运行** | ✅ | ❌ 只在本页 |
+| 配置存储 | `chrome.storage` | `GM_setValue`（互不相通） |
+
+> **一句话**：想全功能用扩展版；浏览器不让装扩展、或只想装一次就用脚本版。
+
+详细差异与脚本版安装见 **[docs/脚本版说明.md](docs/脚本版说明.md)**。
 
 ---
 
@@ -17,12 +40,14 @@
 
 ### 刷课
 
+- **任务队列驱动** —— 先清点本节全部任务点（视频/音频/PDF/测验/作业包/文档），再按顺序逐项做
 - 视频自动播放：倍速、静音、防切屏暂停
-- 持续纠正被播放器偷偷改回的倍速
+- 持续纠正被播放器偷偷改回的倍速；平台锁 1x 就老实接受 1x
 - 文档 / PPT 拟人化滚动（1.5 秒一屏，不一次到底）
-- **任务点真的完成才翻页** —— 读平台标记，不靠瞎猜
-- **自动切到承载任务点的标签** —— 学习要点 → 微课学习
+- **任务点真的完成才翻页** —— 读平台标记（`aria-label` 优先），不靠瞎猜
+- **自动切到承载任务点的标签** —— 只切到真有任务点的那一个，不瞎逛
 - 每日限流自动识别并停止，不白刷
+- 整门课学完自动停（`#prevNextFocusNext` 被平台隐藏即判定完成）
 - 四层 iframe 嵌套自动穿透，各 frame 协同不抢跑
 - 课程树智能跳转，已完成的章节直接跳过
 
@@ -32,6 +57,8 @@
 - **自动破解字体反爬** —— 学习通把题干换成生僻字码位，靠自定义字体渲染回真字，直接抓 DOM 拿到的是乱码
 - 调用你自己配置的 API 作答（OpenAI 兼容，或完全自定义请求体）
 - 自动填写答案，默认**不自动提交**
+- **提交安全网** —— 每道题核对通过才允许自动提交；有题没把握就**暂存**并提示你自查，绝不硬交
+
 
 ### 截图兜底
 
@@ -104,6 +131,43 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 
 ---
 
+## 用脚本版（油猴）
+
+适合「不想装扩展」或「浏览器不让装扩展」的情况。
+
+### 1. 装 Tampermonkey
+
+Edge 加载项商店搜 `Tampermonkey` 装上（Chrome 用 Chrome 应用商店）。
+
+### 2. 装脚本
+
+去 [Releases](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest) 下载
+`学习通自动学习助手.user.js`，Tampermonkey 会自动弹出安装页 → 点「安装」。
+
+或者把 `.user.js` 直接拖进浏览器窗口。
+
+### 3. 允许跨域（**必做**）
+
+首次调答题 API 时 Tampermonkey 会问：
+
+```text
+要访问 api.deepseek.com 吗？  [ 拒绝 ]  [ 总是允许 ]
+```
+
+**必须点「总是允许」**，否则请求发不出去。
+（原因：页面 `fetch` 被 CORS 拦，脚本走 `GM_xmlhttpRequest`，需要用户授权域名。）
+
+### 4. 配置
+
+点 Tampermonkey 图标 → 「学习通自动学习助手」→ **「⚙ 设置」**，
+在页内弹窗里填接口地址 / Key / 模型，点「测试连通」→「保存」。
+
+> 脚本版没有真实截图，视觉解题会自动降级为「文字重绘」，精度低于扩展版。
+
+完整说明（含能力差异表、FAQ）见 **[docs/脚本版说明.md](docs/脚本版说明.md)**。
+
+---
+
 ## 截图解题怎么配
 
 如果字体反爬没完全解开（诊断里看到乱码），用截图兜底：
@@ -117,6 +181,9 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 ```
 
 点 **「测试视觉接口」** 验证。纯文本模型（如 `deepseek-chat`）会在这里报错，这是提前发现问题。
+
+> ⚠️ **脚本版没有真实截图能力**（拿不到 `captureVisibleTab`），会自动降级成「把题干文字画成图片」。
+> 如果题干本身已被字体反爬混淆成假字，画出来仍是假字 —— 这种情况请用扩展版。
 
 触发逻辑：
 
@@ -140,22 +207,43 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 │   ├── manifest.json
 │   ├── icons/
 │   └── src/
-│       ├── background.js      Service Worker：配置、API 代理、截图裁剪
-│       ├── content/
+│       ├── core/              内核（零 chrome API，两形态共用）
+│       │   ├── namespace.js   CSCore 命名空间
+│       │   ├── config.js      默认配置 / mergeDefaults
+│       │   ├── prompt.js      内置提示词
+│       │   └── api.js         答题 / 模型列表 / 连通测试 / 视觉（走注入的传输层）
+│       ├── host/              宿主适配层
+│       │   ├── host-extension.js  chrome.* 实现
+│       │   └── host-userscript.js GM_* + BroadcastChannel 实现
+│       ├── ui/                界面（两形态共用）
+│       │   ├── theme.js       设计令牌
+│       │   ├── panel.js       悬浮面板
+│       │   └── settings.js    设置弹窗（脚本版用）
+│       ├── content/           刷课/答题逻辑（两形态共用）
 │       │   ├── fontdecoder.js 字体反爬解码器
-│       │   └── inject.js      刷课 + 任务点检测 + 标签切换 + 抓题 + 填写
-│       ├── options/           设置页
+│       │   └── inject.js      任务队列 + 刷课 + 任务点检测 + 抓题 + 填写 + 提交安全网
+│       ├── background.js      Service Worker：消息路由、截图裁剪、字体代理、frame 汇总
+│       ├── options/           设置页（扩展专有）
 │       └── popup/             工具栏弹窗
+├── userscript/
+│   └── 学习通自动学习助手.user.js   ← 构建产物（油猴脚本，不要手改）
+├── build/
+│   └── build-userscript.cjs   拼接内核 + 5 项校验
 ├── tests/                     测试套件
 │   ├── *.test.cjs             单元测试
 │   ├── test-*.cjs             浏览器集成测试
+│   ├── lib/inject-content.cjs 统一注入内容脚本
+│   ├── static-server.cjs      极简静态服务器（替代 http-server）
 │   ├── probe-*.cjs            页面元素采集工具（调样式用）
-│   ├── verify-*.cjs           真机验证脚本
 │   ├── mock-api.cjs           模拟 OpenAI 服务
 │   └── *.html                 模拟学习通页面
 ├── docs/                      技术文档
-│   ├── 改造计划.md            v1.2.0 完整设计与实测记录
-│   ├── 技术原理.md
+│   ├── 改造计划.md            v1.2.0 / v1.3.0 完整设计与实测记录
+│   ├── 技术原理.md            架构、刷课、任务队列、字体反爬、提交安全网、宿主抽象、UI 令牌
+│   ├── 脚本化改造计划.md      一份内核 → 两种形态的改造方案与完成情况
+│   ├── 脚本版说明.md          油猴脚本安装 / 授权 / 能力差异 / FAQ
+│   ├── 搜题酱架构剖析.md      搜题酱 v1.17.5 刷课实现逆向分析 + 取舍对照
+│   ├── 对话纪要.md            需求演进、关键决策、踩坑与版本历史
 │   ├── API格式.md
 │   ├── 常见问题.md
 │   ├── 上传GitHub.md
@@ -163,7 +251,7 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 ├── scripts/                   辅助脚本
 │   ├── 启动测试浏览器.cmd
 │   └── 跑全部测试.cmd
-├── .github/workflows/         自动打包发布
+├── .github/workflows/         自动打包发布（扩展 zip + 油猴 .user.js）
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -219,7 +307,41 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 
 停在「学习要点」上滚，任务点永远做不完。所以扩展会自动切到承载任务点的标签，做完再翻页。
 
-详见 [docs/技术原理.md](docs/技术原理.md) 和 [docs/改造计划.md](docs/改造计划.md)。
+### 任务队列（v1.3.0）
+
+v1.2.0 是「看图标 → 判断 → 行动」，v1.3.0 改成「先清点 → 排队 → 逐项做」。
+
+学习通的任务点 iframe 地址里带模块名，任务类型直接能读出来：
+
+```text
+/ananas/modules/video  → 视频
+/ananas/modules/audio  → 音频
+/ananas/modules/pdf    → PDF
+/ananas/modules/work   → 章节测验
+/ananas/modules/zt/topicAttachment → 作业包
+```
+
+所以脚本会把本章**所有**任务点扫成一张清单，按 DOM 顺序逐项做，做完才允许翻页。
+不支持的类型（讨论/直播）标记跳过，不阻塞。
+
+这套结构参考了大学搜题酱的刷课实现（它有任务目录 + 队列 + 提交安全网），
+但解题仍然走**你自己的 API**，不向任何第三方上传题目。
+
+### 提交安全网（v1.3.0）
+
+开了自动提交也不会乱交：
+
+| 情况 | 动作 |
+|---|---|
+| 每题填好且核对通过 | 提交，显示得分 |
+| 有题没把握（题型不支持 / 平台没认） | **暂存**答案 + 提示你自查，不提交 |
+| 弹窗提示「还有未做完」 | 点取消，不硬交 |
+| 弹窗提示「未达到及格线」 | 点取消，不硬交 |
+
+「核对通过」是读平台的隐藏域 `#answer<qid>` —— 平台认了才算填进去，不是看自己以为点了。
+
+详见 [docs/技术原理.md](docs/技术原理.md)、[docs/改造计划.md](docs/改造计划.md)
+和 [docs/搜题酱架构剖析.md](docs/搜题酱架构剖析.md)。
 
 ---
 
@@ -227,27 +349,52 @@ DeepSeek      https://api.deepseek.com/v1/chat/completions
 
 ```bash
 # 单元测试（纯 Node，不需要浏览器）
-node tests/fontdecoder.test.cjs
+node tests/core.test.cjs            # 内核
+node tests/fontdecoder.test.cjs     # 字体解码
+node tests/test-build.cjs           # 油猴产物校验
+node tests/test-options-theme.cjs   # 设置页结构
 
-# 浏览器集成测试（需要先启动 Edge 和 mock 服务）
+# 浏览器集成测试（需要先启动测试浏览器 + 静态服务 + mock API）
+node tests/test-v13.cjs             # 任务队列 / 提交安全网
+node tests/test-panel-queue.cjs     # 面板队列行
+node tests/test-settings-ui.cjs     # 脚本设置弹窗
+node tests/test-userscript.cjs      # 油猴产物功能
+node tests/test-userscript-bus.cjs  # 跨帧总线
 node tests/test-api-features.cjs
 node tests/test-vision.cjs
 node tests/test-screenshot.cjs
-node tests/cdp-test.cjs
+node tests/test-videoquiz.cjs
+node tests/test-kernel-health.cjs
 ```
 
 完整说明见 [tests/README.md](tests/README.md)。
 
-当前状态：
+当前状态（**17 组全过**）：
 
 | 测试 | 结果 |
 |---|---|
-| 语法 + manifest 引用 | 全部通过 |
+| 内核单元（config/prompt/api/传输层） | 57/57 |
+| 油猴产物校验（头部/权限/版本/无 chrome 残留/语法） | 30/30 |
+| 油猴产物功能（Host/配置/面板/队列/答题/截图降级） | 38/38 |
+| 跨帧总线（真实双 iframe） | 16/16 |
+| 脚本设置弹窗（22 字段/保存/取消/Esc/菜单） | 42/42 |
+| 设置页结构（55 个 id 全保留） | 11/11 |
 | 字体解码单元 | 33/33 |
 | 字体解码实机 | 5/5（均分 1.0） |
+| 任务队列 / 提交安全网 | 34/34 |
+| 面板队列行渲染 | 9/9 |
+| 视频弹题 | 19/19 |
+| 倍速放弃 | 15/15 |
+| 视频修复 | 12/12 |
+| 地址规整 | 10/10 |
 | API 功能 | 22/22 |
 | 截图解题协同 | 17/17 |
 | 真实截图裁剪 | 11/11 |
+| **合计** | **381 项全过** |
+
+> 两种形态各跑一遍：扩展侧 `test-kernel-health` 验 Service Worker + importScripts；
+> 脚本侧 `test-userscript` 验产物注入。`test-build` 里有一条硬规矩 ——
+> 除宿主文件外任何源码出现 `chrome.*` 就构建失败，防止未来有人图方便破坏可移植性。
 
 ---
 

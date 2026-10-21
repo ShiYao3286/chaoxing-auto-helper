@@ -1,3 +1,8 @@
+# ============================================================
+# 学习通自动学习助手 · 忽略规则
+# 注意：build/build-userscript.cjs 是**源码**，不要忽略 build/ 整目录
+# ============================================================
+
 # 依赖
 node_modules/
 package-lock.json
@@ -26,12 +31,12 @@ desktop.ini
 ~$*
 .cache/
 
-# 构建产物
+# 构建输出物
 dist/
-build/
 *.zip
 *.crx
 *.pem
+userscript/*.tmp
 
 # 敏感信息（千万别提交）
 .env
@@ -40,6 +45,13 @@ build/
 secrets.json
 config.local.json
 
-# ������Ƶ�ز�
+# 测试视频素材
 sample.mp4
 tests/sample.mp4
+
+# ------------------------------------------------------------
+# 以下内容**要提交**，特意列出防止误加规则：
+#   build/build-userscript.cjs              构建脚本（源码）
+#   userscript/学习通自动学习助手.user.js    油猴产物（Release 直接发布）
+#   docs/images/*.png                       文档配图
+# ------------------------------------------------------------

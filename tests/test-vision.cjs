@@ -22,8 +22,7 @@ function findExtRoot() {
 }
 
 const EXT = findExtRoot();
-const FD_PATH = path.join(EXT, 'src', 'content', 'fontdecoder.js');
-const INJ_PATH = path.join(EXT, 'src', 'content', 'inject.js');
+const { injectContent } = require('./lib/inject-content.cjs');
 
 let socket = null, idCounter = 0;
 const pending = new Map();
@@ -187,11 +186,7 @@ function check(name, cond, extra) {
     window.chrome.runtime.openOptionsPage = function(){};
   `, false);
 
-  const fd = fs.readFileSync(FD_PATH, 'utf8');
-  const inj = fs.readFileSync(INJ_PATH, 'utf8');
-  await ev(pg, fd + '\n;1', false);
-  await ev(pg, inj + '\n;1', false);
-  await new Promise(r => setTimeout(r, 1500));
+  await injectContent(ev, pg, 1500);
 
   check('内容脚本注入成功', await ev(pg, 'typeof window.CS', false) === 'object');
 

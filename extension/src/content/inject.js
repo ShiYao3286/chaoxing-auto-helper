@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 学习通自动学习助手 — 内容脚本
  *
  * 架构（重要）：
@@ -44,6 +44,37 @@ if (!window.__CS_BOOTED__) {
     try { return window.top === window.self; } catch { return false; }
   })();
 
+  /**
+   * 宿主适配层
+   *
+   * 本文件所有对外通信都走 Host，不再直接调 chrome.runtime.*。
+   *   - 扩展：加载 host-extension.js，Host 走 chrome.runtime.sendMessage
+   *   - 油猴：加载 host-userscript.js，Host 走 GM_* + 跨帧总线
+   * 这样同一份刷课/答题逻辑两个形态共用。
+   *
+   * 宿主缺失时退化为空实现而不是 return ——
+   * 经典脚本的顶层不允许 return（Illegal return statement），
+   * 而且整段代码在 `if (!__CS_BOOTED__)` 块里，直接抛错会让页面脚本全挂。
+   */
+  const Host = (function () {
+    const h = (typeof globalThis !== 'undefined' ? globalThis : window).CSHost;
+    if (h) return h;
+    console.error('[学习通助手] 宿主层未加载（CSHost 缺失），功能不可用');
+    const noop = () => null;
+    return {
+      kind: 'none',
+      send: async () => null,
+      sendNoWait: noop,
+      on: noop,
+      getCfg: async () => null,
+      setCfg: async () => null,
+      getRunning: async () => false,
+      setRunning: noop,
+      openOptions: noop,
+      caps: {}
+    };
+  })();
+
   const TAG = '[学习通助手]';
 
   const state = {
@@ -58,7 +89,9 @@ if (!window.__CS_BOOTED__) {
     quizRunning: false,
     lastHref: location.href,
     videoDone: true,        // 视频是否已达完成门槛（90%）
-    videoPercent: 0,        // 视频完成百分比
+    videoPercent: 0,
+    videoThreshold: 0.9,    // 视频完成门槛（运行时从页面读）        // 视频完成百分比
+    videoQuizSig: '',     // 当前视频弹题的签名（防重复处理）
     chapterEnterAt: Date.now(),  // 进入本节时间（最低停留用）
     docDone: false,         // 当前文档是否已看完
     docTarget: '',          // 当前滚动的内容区名（调试用）
@@ -66,7 +99,21 @@ if (!window.__CS_BOOTED__) {
     speedLocked: false,     // 平台提示「不可倍速」
     speedGiveUp: false,     // 试过被拒，永久放弃倍速
     speedReverts: 0,        // 倍速被改回的次数
-    antispider: false       // 检测到风控验证页
+    antispider: false,      // 检测到风控验证页
+
+    /* ── v1.3.0：借鉴大学搜题酱的任务队列 ──
+     * 搜题酱不靠「猜标签页」，而是先扫出本章的 iframe 任务清单，
+     * 再按清单逐项执行。我们用同一套模型，但完成判定改成
+     * 学习通自己的任务点标记（aria-label），比它更准。 */
+    taskQueue: [],          // [{order, index, src, rawType, type, label, done, supported}]
+    taskQueueSig: '',       // 队列签名（只在变化时重绘面板）
+    taskQueueAt: 0,         // 上次扫描时间
+    tabTried: [],           // 本节已尝试过的标签 id（防止两个标签来回切）
+    routeFp: '',            // 路由指纹 {href, mainIframeSrc, mainDocumentHref}
+    routeEpoch: 0,          // 路由代际：异步步骤前后比对，过期就丢弃
+    courseComplete: false,  // 整门课已完成（#prevNextFocusNext 隐藏）
+    workSafe: null,         // 本轮测验提交安全网 {total, done, safe, unsafeReason}
+    score: ''               // 最近一次提交后的分数（给用户看）
   };
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -213,8 +260,65 @@ if (!window.__CS_BOOTED__) {
     return false;
   }
 
-  /** 视频完成门槛（页面明示：观看时长需 >= 总时长的 90%） */
+  /**
+   * 视频完成门槛（默认 90%，但会从页面动态读取）
+   *
+   * 实测不同章节门槛不同：
+   *   微课  → 观看时长需 ≥ 总时长的 90%
+   *   动画  → 观看时长需 ≥ 总时长的 70%
+   * 硬编码会导致低门槛的视频永远判不完成。
+   */
   const VIDEO_THRESHOLD = 0.9;
+
+  /**
+   * 从页面的「完成条件」文字里读真实门槛
+   *
+   * 实测 DOM：
+   *   <div class="task-condition">
+   *     <span class="special-text">完成条件</span>
+   *     观看时长需 ≥ 总时长的 70%
+   *   </div>
+   *
+   * @returns {number} 0.7 / 0.9 等；读不到返回默认值
+   */
+  function readVideoThreshold() {
+    try {
+      // ① 优先从 task-condition 读
+      const conds = qAll('.task-condition');
+      for (const el of conds) {
+        const t = (el.innerText || '').replace(/\s+/g, ' ');
+        const m = t.match(/≥\s*总时长的\s*(\d+)\s*%/);
+        if (m) {
+          const pct = parseInt(m[1], 10);
+          if (pct > 0 && pct <= 100) {
+            const v = pct / 100;
+            if (Math.abs(v - state.videoThreshold) > 0.001) {
+              log('视频门槛: ' + pct + '%');
+              state.videoThreshold = v;
+            }
+            return v;
+          }
+        }
+      }
+
+      // ② 退化：从整页文字里找
+      const txt = (document.body?.innerText || '').slice(0, 3000);
+      const m2 = txt.match(/≥\s*总时长的\s*(\d+)\s*%/);
+      if (m2) {
+        const pct = parseInt(m2[1], 10);
+        if (pct > 0 && pct <= 100) {
+          const v = pct / 100;
+          state.videoThreshold = v;
+          return v;
+        }
+      }
+    } catch { /* ignore */ }
+
+    // ③ 用户配置 > 默认
+    return Number(state.cfg?.auto?.videoThreshold) || VIDEO_THRESHOLD;
+  }
+
+
 
   /**
    * 等某个条件成立（轮询）
@@ -238,7 +342,7 @@ if (!window.__CS_BOOTED__) {
    *   - 完成条件是页面明写的：观看时长 >= 总时长的 90%
    */
   async function checkVideoTask(v) {
-    const threshold = Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD;
+    const threshold = readVideoThreshold();
 
     if (!v) return { state: 'no-video', done: true, waiting: false };
 
@@ -652,8 +756,8 @@ if (!window.__CS_BOOTED__) {
    * 位置：mooc-ans/work/doHomeWorkNew 帧内
    */
   function hasQuiz() {
-    // 按可靠性排优先级
-    const sels = ['.TiMu', '.questionLi', '.mark_item'];
+    // 按可靠性排优先级（.singleQuesId 是搜题酱用的旧版容器，加进来兜底）
+    const sels = ['.TiMu', '.questionLi', '.mark_item', '.singleQuesId'];
     for (const s of sels) {
       if (qAll(s).length > 0) return true;
     }
@@ -662,7 +766,18 @@ if (!window.__CS_BOOTED__) {
 
   /** 判题型（优先看 DOM 属性，比文字可靠） */
   function judgeType(text, qEl) {
-    // ① 先看 qtype 属性（实测：0单选 1多选 2填空 3判断）
+    // ① 最可靠：隐藏域 input[id^=answertype] 的值
+    //    （搜题酱 getAnswerType 的同一套映射：0单选 1多选 2填空 3判断）
+    if (qEl) {
+      const at = qEl.querySelector('input[id^="answertype"]');
+      const av = at ? String(at.value || '').trim() : '';
+      if (av === '0') return 'single';
+      if (av === '1') return 'multi';
+      if (av === '2') return 'fill';
+      if (av === '3') return 'judge';
+    }
+
+    // ② qtype 属性（实测：0单选 1多选 2填空 3判断）
     if (qEl) {
       const firstLi = qEl.querySelector('.Zy_ulTop li');
       const qtype = firstLi?.getAttribute('qtype');
@@ -671,12 +786,13 @@ if (!window.__CS_BOOTED__) {
       if (qtype === '3') return 'judge';
       // 填空题没有 li，看 tiankongsize 隐藏域
       if (qEl.querySelector('input[name^="tiankongsize"]') ||
-          qEl.querySelector('textarea[name^="answerEditor"]')) {
+          qEl.querySelector('textarea[name^="answerEditor"]') ||
+          qEl.querySelector('.blankItemDiv')) {
         return 'fill';
       }
     }
 
-    // ② 退化到文字判断
+    // ③ 退化到文字判断
     if (/【单选题】|单选题/.test(text)) return 'single';
     if (/【多选题】|多选题/.test(text)) return 'multi';
     if (/【判断题】|判断题/.test(text)) return 'judge';
@@ -710,7 +826,10 @@ if (!window.__CS_BOOTED__) {
    *   判断的 data 是 "true"/"false"，选项文字是「对/错」
    */
   async function scrapeQuiz() {
-    const boxes = qAll('.TiMu');
+    // 容器优先级：.TiMu（现版）→ .questionLi（旧版）→ .singleQuesId（搜题酱用的版本）
+    let boxes = qAll('.TiMu');
+    if (!boxes.length) boxes = qAll('.questionLi');
+    if (!boxes.length) boxes = qAll('.singleQuesId');
     if (!boxes.length) return { ok: false, reason: '本文档无题目' };
 
     const questions = [];
@@ -758,9 +877,29 @@ if (!window.__CS_BOOTED__) {
         });
       }
 
+      // 选项兜底：旧版/考试页用 .before-after / .before-after-checkbox
+      if (!options.length) {
+        for (const el of b.querySelectorAll('.before-after, .before-after-checkbox')) {
+          const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const m = txt.match(/^\s*([A-Za-z])\s*[、，,．.\s+]?/);
+          const input = el.querySelector('[name^=answer]');
+          options.push({
+            value: m ? m[1].toUpperCase() : txt.slice(0, 30),
+            letter: m ? m[1].toUpperCase() : '',
+            text: txt,
+            qid: b.getAttribute('data') || '',
+            checked: /check_answer/.test(String(input?.className || '')),
+            el
+          });
+        }
+      }
+
       // ── 填空题的输入区 ──
-      const fillAreas = [...b.querySelectorAll('textarea[name^="answerEditor"]')];
-      const blankCount = +(b.querySelector('input[name^="tiankongsize"]')?.value || 0);
+      const fillAreas = [...b.querySelectorAll(
+        'textarea[name^="answerEditor"], .blankItemDiv textarea, .Zy_ulTk textarea'
+      )];
+      const blankCount = +(b.querySelector('input[name^="tiankongsize"]')?.value
+        || b.querySelectorAll('.blankItemDiv').length || 0);
 
       questions.push({
         index: i + 1,
@@ -853,7 +992,7 @@ if (!window.__CS_BOOTED__) {
       if (!ans) ans = byNum.get(String(q.index).trim());
 
       if (!ans) {
-        report.push({ num: q.num, ok: false, reason: 'API 未返回本题答案', type: q.type });
+        report.push({ num: q.num, ok: false, safe: false, reason: 'API 未返回本题答案', type: q.type });
         continue;
       }
 
@@ -922,21 +1061,47 @@ if (!window.__CS_BOOTED__) {
             }
           }
 
-          // ── 校验隐藏域 ──
+          // ── 校验：隐藏域 + 选中态（决定「能不能安全提交」）──
+          await sleep(150);
           const hiddenAns = q.qid ? document.getElementById('answer' + q.qid) : null;
-          const gotValue = hiddenAns ? hiddenAns.value : '(无隐藏域)';
+          const gotValue = hiddenAns ? String(hiddenAns.value || '') : '(无隐藏域)';
           const expected = q.type === 'judge' ? wants[0] : wants.join('');
-          if (hiddenAns && gotValue !== expected) {
-            log('填答校验不符: 期望 ' + expected + '，实际 ' + gotValue);
+
+          const checkedNow = q.options.filter(o => {
+            const span = o.el.querySelector('.num_option, .num_option_dx');
+            return /check_answer/.test(String(span?.className || ''))
+                || /check_answer/.test(String(o.el.className || ''));
+          });
+
+          let safe = false;
+          let safeReason = '';
+          if (q.type === 'judge') {
+            const hv = gotValue.toLowerCase();
+            safe = hv
+              ? hv === String(expected).toLowerCase()
+              : checkedNow.length > 0;
+            if (!safe) safeReason = '判断题答案未写入（' + gotValue + '）';
+          } else {
+            const norm = v => String(v || '').toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+            const wantLetters = wants.map(w => String(w).toUpperCase());
+            safe = checkedNow.length > 0 && (
+              (hiddenAns && norm(gotValue) === norm(wantLetters.join('')))
+              || checkedNow.length === wantLetters.length
+            );
+            if (!safe) safeReason = '选项未选中或与答案不符（隐藏域=' + gotValue + '）';
           }
-          const alreadyOk = 0;
+
+          if (hiddenAns && gotValue !== expected) {
+            log('填答校验: 期望 ' + expected + '，隐藏域 ' + gotValue + '（安全=' + safe + '）');
+          }
 
           report.push({
             num: q.num,
-            ok: clicked > 0,
+            ok: clicked > 0 || checkedNow.length > 0,
+            safe,
+            safeReason,
             type: q.type,
             filled: wants.join(''),
-            alreadyOk,
             total: q.options.length
           });
 
@@ -974,19 +1139,59 @@ if (!window.__CS_BOOTED__) {
             }
           } catch { /* ignore */ }
 
+          // 方式 C：搜题酱写法 —— .blankItemDiv 里可能是 .InpDIV / textarea / iframe
+          try {
+            const blanks = q.el.querySelectorAll('.blankItemDiv');
+            for (let k = 0; k < blanks.length && k < vals.length; k++) {
+              const bd = blanks[k];
+              const inp = bd.querySelector('.InpDIV');
+              if (inp) { inp.innerHTML = '<p>' + vals[k] + '</p>'; filled++; }
+              const ta = bd.querySelector('textarea');
+              if (ta && !ta.value) { ta.value = vals[k]; filled++; }
+              const fr = bd.querySelector('iframe');
+              if (fr) {
+                let d = null;
+                try { d = fr.contentDocument || fr.contentWindow.document; } catch { d = null; }
+                const p = d?.body ? (d.body.querySelector('p') || d.body) : null;
+                if (p) { p.innerHTML = vals[k]; filled++; }
+              }
+            }
+          } catch { /* ignore */ }
+
+          // 提交安全：答案必须真的落到了某个输入区里
+          let safe = false;
+          let safeReason = '';
+          try {
+            const values = [...(q.fillAreas || [])].map(ta => String(ta.value || '').trim());
+            const iframeTexts = [];
+            for (const fr of q.el.querySelectorAll('.edui-editor iframe, .blankItemDiv iframe')) {
+              try { iframeTexts.push(String(fr.contentDocument?.body?.innerText || '').trim()); } catch { /* ignore */ }
+            }
+            const inpTexts = [...q.el.querySelectorAll('.blankItemDiv .InpDIV')]
+              .map(e => String(e.innerText || '').trim());
+            const blob = values.concat(iframeTexts, inpTexts).join(' ');
+            safe = vals.length > 0 && vals.every(v => blob.includes(v));
+            if (!safe) safeReason = '答案未写入输入区';
+          } catch {
+            safe = filled > 0;
+            if (!safe) safeReason = '无法校验输入区';
+          }
+
           report.push({
             num: q.num,
             ok: filled > 0,
+            safe,
+            safeReason,
             type: 'fill',
             filled,
             need: vals.length
           });
 
         } else {
-          report.push({ num: q.num, ok: false, reason: '无法识别题型: ' + q.type });
+          report.push({ num: q.num, ok: false, safe: false, reason: '无法识别题型: ' + q.type });
         }
       } catch (e) {
-        report.push({ num: q.num, ok: false, reason: e?.message });
+        report.push({ num: q.num, ok: false, safe: false, reason: e?.message });
       }
     }
 
@@ -1016,7 +1221,9 @@ if (!window.__CS_BOOTED__) {
    */
   async function captureQuizImage() {
     // 实测：学习通题目容器是 .TiMu（不是 .questionLi）
-    const boxes = qAll('.TiMu').length ? qAll('.TiMu') : qAll('.questionLi');
+    let boxes = qAll('.TiMu');
+    if (!boxes.length) boxes = qAll('.questionLi');
+    if (!boxes.length) boxes = qAll('.singleQuesId');
     if (!boxes.length) throw new Error('没有题目区域可截图');
 
     const maxShots = Math.max(1, Math.min(6, (state.cfg.vision && state.cfg.vision.maxShots) || 3));
@@ -1088,8 +1295,7 @@ if (!window.__CS_BOOTED__) {
 
     let shot = null;
     try {
-      shot = await chrome.runtime.sendMessage({
-        type: 'page:screenshot',
+      shot = await Host.send('page:screenshot', {
         rect: {
           x: Math.max(0, Math.floor(left)),
           y: Math.max(0, Math.floor(top)),
@@ -1222,6 +1428,269 @@ if (!window.__CS_BOOTED__) {
     return { reliable: reasons.length === 0, reasons };
   }
 
+  /* ============================================================
+   * 4c. 提交测验（跨 frame 处理确认弹窗）
+   *
+   * 实测链路（2026-10-21）：
+   *   第1步  测验帧 点 a.btnSubmit  onclick="btnBlueSubmit();"
+   *   第2步  顶层弹出 #workpop.maskDiv（display:none → block）
+   *          内含 "提示 / 确认提交？" + #popok(提交) + #popno(取消)
+   *   第3步  点 #popok 真正提交
+   * ============================================================ */
+
+  /** 安全取 document（跨域会抛错） */
+  function safeDoc(win) {
+    try {
+      const d = win.document;
+      return d && d.body ? d : null;
+    } catch { return null; }
+  }
+
+  /** 收集可访问的 window（自己 + 各级父窗口） */
+  function collectWindows() {
+    const wins = [];
+    try { if (safeDoc(window)) wins.push(window); } catch { /* ignore */ }
+
+    let w = window;
+    for (let i = 0; i < 5; i++) {
+      try {
+        if (!w.parent || w.parent === w) break;
+        w = w.parent;
+        if (safeDoc(w) && !wins.includes(w)) wins.push(w);
+      } catch { break; }
+    }
+
+    try {
+      if (window.top && window.top !== window && safeDoc(window.top) && !wins.includes(window.top)) {
+        wins.push(window.top);
+      }
+    } catch { /* ignore */ }
+
+    return wins;
+  }
+
+  /** 在某个 document 里找主提交按钮 */
+  function findSubmitBtn(doc) {
+    try {
+      const direct = doc.querySelector('a.btnSubmit') || doc.querySelector('.btnSubmit');
+      if (direct) {
+        const r = direct.getBoundingClientRect();
+        if (r.width > 0 || direct.offsetParent !== null) return direct;
+      }
+      for (const e of doc.querySelectorAll('a, button, input[type=button]')) {
+        const t = (e.innerText || e.value || '').trim();
+        if (/^提\s*交$/.test(t)) {
+          const r = e.getBoundingClientRect();
+          if (r.width > 0 || e.offsetParent !== null) return e;
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  /** 元素是否真的可见（学习通弹窗常驻 DOM，只是 display:none） */
+  function reallyVisible(el) {
+    if (!el) return false;
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return false;
+      let cs = null;
+      try { cs = getComputedStyle(el); } catch { cs = null; }
+      if (cs && (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0')) return false;
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 只在「弹窗内部」找确认按钮
+   *
+   * 为什么不全局找：主提交按钮的文字也是「提交」，如果弹窗还没出来就全局搜，
+   * 会把主按钮当成确认按钮，反复点两次 —— 轻则弹两个框，
+   * 重则把一次提交动作变成两次。
+   */
+  function findPopupConfirmBtn(doc) {
+    try {
+      const ok = doc.getElementById('popok');
+      if (ok && reallyVisible(ok)) return ok;
+
+      const boxes = ['#workpop', '.maskDiv', '.popDiv', '[class*="dialog"]', '[class*="modal"]'];
+      for (const s of boxes) {
+        let box = null;
+        try { box = doc.querySelector(s); } catch { box = null; }
+        if (!box || !reallyVisible(box)) continue;
+        for (const e of box.querySelectorAll('a, button, input[type=button]')) {
+          const t = (e.innerText || e.value || '').trim();
+          if (!/^提\s*交$|^确\s*定$|^确\s*认$/.test(t)) continue;
+          if (reallyVisible(e)) return e;
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  /**
+   * 暂存答案（对应搜题酱 handleTmpSave）
+   *
+   * 什么时候用：有题目没把握（没核对上/不支持的题型），
+   * 但用户开了「自动提交」。这时候**不能硬交** ——
+   * 交上去就是零分/低分。学习通有「保存」按钮，先存着，
+   * 提示用户自查后再手动提交。这是搜题酱的 doneFlags/
+   * submitSafeFlags 安全网思路，成绩优先。
+   */
+  async function doTmpSave() {
+    for (const win of collectWindows()) {
+      const doc = safeDoc(win);
+      if (!doc) continue;
+
+      // 学习通有些版本把「保存」收在 .ZY_sub 菜单里，先展开
+      try {
+        const sub = doc.querySelector('.ZY_sub.clearfix, .ZY_sub');
+        if (sub && reallyVisible(sub)) {
+          sub.click();
+          await sleep(500);
+        }
+      } catch { /* ignore */ }
+
+      const sels = [
+        'a.btnSave.workBtnIndex', 'a.btnSave', 'button.btnSave',
+        '.btnSave.workBtnIndex', 'a[id^="btnSave"]'
+      ];
+      let btn = null;
+      for (const s of sels) {
+        const el = doc.querySelector(s);
+        if (el && reallyVisible(el)) { btn = el; break; }
+      }
+      if (!btn) continue;
+
+      try {
+        btn.removeAttribute('href');
+        btn.click();
+        log('已点击「保存」暂存答案');
+        await sleep(1500);
+        return { ok: true };
+      } catch { /* try next window */ }
+    }
+    return { ok: false, reason: '找不到保存按钮' };
+  }
+
+  /** 执行提交（含确认弹窗 / 及格线弹窗 / 分数读取） */
+  async function doSubmitQuiz() {
+    // 1. 找主提交按钮
+    let mainBtn = null;
+    for (const win of collectWindows()) {
+      const doc = safeDoc(win);
+      if (!doc) continue;
+      const b = findSubmitBtn(doc);
+      if (b) { mainBtn = b; break; }
+    }
+    if (!mainBtn) {
+      log('提交失败：找不到提交按钮');
+      return { ok: false, confirmed: false, reason: '找不到提交按钮' };
+    }
+
+    const epoch = state.routeEpoch;
+
+    // 2. 点它（先摘 href 再点，搜题酱的细节处理）
+    try {
+      mainBtn.removeAttribute('href');
+      mainBtn.click();
+      log('已点击提交按钮');
+    } catch (e) {
+      return { ok: false, confirmed: false, reason: '点击失败' };
+    }
+
+    // 3. 等提交弹窗（最多 8 秒；#workpop 优先，其次按按钮文字找）
+    let pop = null;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await sleep(200);
+      if (isStale(epoch)) return { ok: false, stale: true, reason: '页面已切换，放弃提交' };
+      for (const win of collectWindows()) {
+        const doc = safeDoc(win);
+        if (!doc) continue;
+        const box = doc.getElementById('workpop');
+        if (box && reallyVisible(box)) { pop = { doc, el: box }; break; }
+        const b = findPopupConfirmBtn(doc);
+        if (b) { pop = { doc, el: b }; break; }
+      }
+      if (pop) break;
+    }
+
+    // 4. 没弹窗 → 可能直接提交了
+    if (!pop) {
+      log('没检测到确认弹窗，可能已直接提交');
+      return { ok: true, confirmed: false };
+    }
+
+    // 5. 弹窗正文：平台说「未做完」→ 取消提交（学习通拦下就是拦下）
+    const popText = pop.doc.getElementById('popcontent')?.innerText || pop.el.innerText || '';
+    if (/未做完|未完成|还有题目/.test(popText)) {
+      const no = pop.doc.getElementById('popno');
+      if (no) { no.removeAttribute('href'); no.click(); }
+      log('提交被平台拦下：' + popText.replace(/\s+/g, ' ').slice(0, 60));
+      return { ok: false, cancelled: true, reason: '平台提示还有题目未做完' };
+    }
+
+    // 6. 点确认
+    try {
+      await sleep(300);
+      const okBtn = pop.doc.getElementById('popok') || findPopupConfirmBtn(pop.doc);
+      if (!okBtn) return { ok: false, confirmed: false, reason: '找不到确认按钮' };
+      okBtn.removeAttribute('href');
+      okBtn.click();
+      log('已点击确认弹窗的「提交」');
+      await sleep(1800);
+    } catch (e) {
+      return { ok: false, confirmed: false, reason: '确认失败' };
+    }
+
+    // 7. 及格线弹窗：平台问「未达到及格线，是否继续」→ 取消，别硬交
+    try {
+      for (const win of collectWindows()) {
+        const doc = safeDoc(win);
+        if (!doc) continue;
+        const focus = doc.getElementById('workpopFocus');
+        if (!focus || !reallyVisible(focus)) continue;
+        const t2 = doc.getElementById('popcontent')?.innerText || focus.innerText || '';
+        if (/未达到及格线|不及格|低于及格线/.test(t2)) {
+          const no = doc.getElementById('popno');
+          if (no) { no.removeAttribute('href'); no.click(); }
+          log('平台提示未达到及格线，已取消提交');
+          return { ok: true, confirmed: true, passed: false, reason: '未达到及格线' };
+        }
+      }
+    } catch { /* ignore */ }
+
+    // 8. 读分数（有就记下来，状态栏给用户看）
+    let score = '';
+    try {
+      for (const win of collectWindows()) {
+        const doc = safeDoc(win);
+        if (!doc) continue;
+        const el = doc.querySelector('.dividerCon .achievement i, .achievement i');
+        const t = (el?.innerText || '').trim();
+        if (/^\d+(\.\d+)?$/.test(t)) { score = t; break; }
+      }
+    } catch { /* ignore */ }
+    if (score) state.score = score;
+
+    // 9. 关掉后续提示（如果有）
+    for (const win of collectWindows()) {
+      const doc = safeDoc(win);
+      if (!doc) continue;
+      for (const e of doc.querySelectorAll('a, button, input[type=button]')) {
+        const t = (e.innerText || e.value || '').trim();
+        if (!/^(知道了|确定|确认|关闭)$/.test(t)) continue;
+        if (reallyVisible(e)) {
+          try { e.click(); } catch { /* ignore */ }
+          break;
+        }
+      }
+    }
+
+    return { ok: true, confirmed: true, score };
+  }
+
   /** 调视觉模型解截图 */
   async function solveByVision() {
     setStatus('📷 截图解题中…', true);
@@ -1239,8 +1708,7 @@ if (!window.__CS_BOOTED__) {
 
     let resp;
     try {
-      resp = await chrome.runtime.sendMessage({
-        type: 'vision:answer',
+      resp = await Host.send('vision:answer', {
         images,
         mime: img.mime || 'image/png'
       });
@@ -1266,6 +1734,296 @@ if (!window.__CS_BOOTED__) {
       degraded: !!img.degraded,
       shotCount: images.length
     };
+  }
+
+  /* ============================================================
+   * 4d. 视频弹题（播放中弹出的测验）
+   *
+   * 学习通视频播放到某些时间点会弹出题目，
+   * 不答对视频就一直暂停。这里自动答掉。
+   *
+   * 实测 DOM（视频 iframe 内）：
+   *   .x-container-default
+   *     .ans-videoquiz .tkTopic
+   *     .ans-videoquiz-opt  → [name="ans-videoquiz-opt"]
+   *     #videoquiz-submit / #videoquiz-continue / #knowledgeBack
+   * ============================================================ */
+
+  /** 元素是否可见（含祖先链检查） */
+  function isVisibleDeep(el) {
+    try {
+      if (!el) return false;
+      const doc = el.ownerDocument;
+      const win = doc?.defaultView;
+      if (!win) return false;
+
+      let node = el;
+      while (node && node.nodeType === 1) {
+        const cs = win.getComputedStyle(node);
+        if (cs.display === 'none' || cs.visibility === 'hidden' ||
+            cs.visibility === 'collapse' || cs.opacity === '0') {
+          return false;
+        }
+        node = node.parentElement;
+      }
+
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    } catch { return false; }
+  }
+
+  /** 找视频弹题的容器 */
+  function findVideoQuizBox() {
+    try {
+      const container = q1('.x-container-default');
+      if (!container) return null;
+      const topic = container.querySelector('.ans-videoquiz .tkTopic');
+      if (!topic) return null;
+      if (!isVisibleDeep(container) || !isVisibleDeep(topic)) return null;
+      return { container, topic };
+    } catch { return null; }
+  }
+
+  /** 视频弹题是否正在显示 */
+  function hasVideoQuiz() {
+    return !!findVideoQuizBox();
+  }
+
+  /** 从选项文字里提取字母（兼容 "A 内容" / "A、内容" / "A，内容"） */
+  function pickOptionLetter(text) {
+    const m = String(text || '').trim().match(/^([A-Za-z])[、，,．.\s+]?/);
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  /** 抓取视频弹题的题目内容 */
+  function scrapeVideoQuiz() {
+    const box = findVideoQuizBox();
+    if (!box) return null;
+
+    const { container, topic } = box;
+
+    // 题干
+    const title = (topic.innerText || '').replace(/\s+/g, ' ').trim();
+
+    // 题型
+    let type = 'single';
+    if (/多选/.test(title)) type = 'multi';
+    else if (/判断/.test(title)) type = 'judge';
+    else if (/填空/.test(title)) type = 'fill';
+
+    // 选项
+    const optEls = [...container.querySelectorAll('.ans-videoquiz-opt')];
+    const options = optEls.map(el => {
+      const txt = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      return {
+        letter: pickOptionLetter(txt),
+        text: txt,
+        el
+      };
+    }).filter(o => o.letter);
+
+    return { title, type, options, container };
+  }
+
+  /** 点击元素（先移除 href 防止默认行为干扰） */
+  function safeClick(el) {
+    if (!el) return false;
+    try {
+      el.removeAttribute('href');
+      el.click();
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 填写视频弹题的答案
+   *
+   * @returns {{ ok:boolean, filled:number, reason?:string }}
+   */
+  function fillVideoQuiz(scraped, answerLetters) {
+    if (!scraped) return { ok: false, filled: 0, reason: '无题目' };
+
+    const wants = answerLetters
+      .map(x => String(x).trim().toUpperCase())
+      .filter(x => /^[A-Z]$/.test(x));
+
+    if (!wants.length) return { ok: false, filled: 0, reason: '答案格式不对' };
+
+    let filled = 0;
+
+    for (const opt of scraped.options) {
+      const input = opt.el.querySelector('[name="ans-videoquiz-opt"]') ||
+                    opt.el.querySelector('input');
+      if (!input) continue;
+
+      const shouldPick = wants.includes(opt.letter);
+
+      try {
+        if (scraped.type === 'multi') {
+          // 多选：该选的点上，不该选的取消
+          if (shouldPick && !input.checked) { input.click(); filled++; }
+          else if (!shouldPick && input.checked) { input.click(); }
+          else if (shouldPick) { filled++; }
+        } else {
+          // 单选/判断：只点目标
+          if (shouldPick) {
+            if (!input.checked) input.click();
+            filled++;
+            break;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    return { ok: filled > 0, filled, reason: filled ? '' : '没点上' };
+  }
+
+  /**
+   * 提交视频弹题并判断结果
+   *
+   * 参考实测逻辑：
+   *   · 出现 #videoquiz-continue  → 答对了
+   *   · 还有警告 + #videoquiz-submit 可见 → 答错，要重试
+   *   · 还有警告 + #knowledgeBack 可见 → 答错
+   *   · 都没了 → 成功
+   *
+   * @returns {{ status:string, reason?:string }}
+   *   status: 'continued' | 'submitted' | 'retry' | 'failed'
+   */
+  async function submitVideoQuiz() {
+    const box = findVideoQuizBox();
+    const container = box?.container || q1('.x-container-default');
+    if (!container) return { status: 'failed', reason: '找不到弹题容器' };
+
+    const doc = container.ownerDocument;
+
+    // 点提交
+    const submitBtn = doc.getElementById('videoquiz-submit') ||
+                      container.querySelector('#videoquiz-submit');
+    if (!submitBtn) return { status: 'failed', reason: '找不到提交按钮' };
+
+    safeClick(submitBtn);
+    await sleep(2000);
+
+    // 判断结果
+    const spanNotBackPoint = doc.getElementById('spanNotBackPoint');
+    const spanNot = doc.getElementById('spanNot');
+    const hasWarning =
+      (spanNotBackPoint && doc.defaultView?.getComputedStyle(spanNotBackPoint).display === 'block') ||
+      (spanNot && doc.defaultView?.getComputedStyle(spanNot).display === 'block');
+
+    const continueBtn = doc.getElementById('videoquiz-continue');
+    const submitStill = doc.getElementById('videoquiz-submit');
+    const knowledgeBack = doc.getElementById('knowledgeBack');
+
+    // A. 出现「继续」→ 答对了
+    if (isVisibleDeep(continueBtn)) {
+      safeClick(continueBtn);
+      return { status: 'continued', reason: 'continue_visible' };
+    }
+
+    // B. 还有警告 + 提交按钮可见 → 答错，重试
+    if (hasWarning && isVisibleDeep(submitStill)) {
+      return { status: 'retry', reason: 'submit_still_visible' };
+    }
+
+    // C. 还有警告 + 返回知识点 → 答错
+    if (hasWarning && isVisibleDeep(knowledgeBack)) {
+      safeClick(knowledgeBack);
+      return { status: 'continued', reason: 'knowledge_back_visible' };
+    }
+
+    // D. 都没了 → 成功
+    return { status: 'submitted' };
+  }
+
+  /**
+   * 处理视频弹题（完整流程）
+   *
+   * @returns {boolean} true = 处理过弹题（本轮让位）
+   */
+  async function handleVideoQuiz() {
+    const scraped = scrapeVideoQuiz();
+    if (!scraped) return false;
+
+    // 同一道题只处理一次，避免死循环
+    const sig = scraped.title.slice(0, 60);
+    if (sig && sig === state.videoQuizSig) {
+      // 已经在处理同一题了，等一等
+      await sleep(1500);
+      return true;
+    }
+    state.videoQuizSig = sig;
+
+    setStatus('📝 视频弹题：' + scraped.options.length + ' 个选项，请求答案…', true);
+    log('视频弹题', scraped.title, scraped.options.map(o => o.letter));
+
+    // 调 API
+    let letters = null;
+
+    try {
+      // 优先用文本 API
+      const payload = [{
+        num: '1',
+        type: scraped.type,
+        text: scraped.title,
+        options: scraped.options.map(o => ({
+          letter: o.letter,
+          text: o.text,
+          value: o.letter
+        }))
+      }];
+
+      const resp = await Host.send('quiz:answer', {
+        questions: payload
+      });
+
+      if (resp?.ok && resp.result?.answers?.length) {
+        const ans = resp.result.answers[0];
+        const raw = Array.isArray(ans.answer) ? ans.answer : [ans.answer];
+        letters = raw.map(x => String(x).trim()).join('').match(/[A-Za-z]/g) || [];
+        letters = letters.map(x => x.toUpperCase());
+      }
+    } catch (e) {
+      log('视频弹题 API 失败', e?.message);
+    }
+
+    if (!letters || !letters.length) {
+      setStatus('⚠ 视频弹题：没拿到答案，请手动作答', false);
+      state.videoQuizSig = '';   // 允许下轮重试
+      return true;
+    }
+
+    // 最多重试 3 次
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const fill = fillVideoQuiz(scraped, letters);
+      if (!fill.ok) {
+        setStatus('⚠ 视频弹题：填答案失败（' + (fill.reason || '') + '）', false);
+        return true;
+      }
+
+      const result = await submitVideoQuiz();
+
+      if (result.status === 'continued' || result.status === 'submitted') {
+        setStatus('✅ 视频弹题已答对', false);
+        state.videoQuizSig = '';
+        await sleep(1000);
+        return true;
+      }
+
+      if (result.status === 'retry') {
+        log('视频弹题答错，重试 ' + attempt + '/3');
+        setStatus('⚠ 视频弹题答错，重试 ' + attempt + '/3', true);
+        await sleep(1500);
+        continue;
+      }
+
+      break;
+    }
+
+    setStatus('⚠ 视频弹题连续答错，请手动处理', false);
+    state.videoQuizSig = '';
+    return true;
   }
 
   /** 测验主流程：抓 → 判断可信度 → 文本答 / 截图答 → 填 */
@@ -1330,7 +2088,7 @@ if (!window.__CS_BOOTED__) {
 
         let resp;
         try {
-          resp = await chrome.runtime.sendMessage({ type: 'quiz:answer', questions: payload });
+          resp = await Host.send('quiz:answer', { questions: payload });
         } catch (e) {
           setStatus('❌ 无法连接后台（扩展是否被重新加载？）', false);
           return false;
@@ -1419,33 +2177,49 @@ if (!window.__CS_BOOTED__) {
       log('填写结果', report, { usedVision, visionMeta });
       state.quizDoneSig = sig;
 
-      // 提交条件：配置开了自动提交，且视觉没标注不确定
-      const canSubmit = state.cfg.quiz.autoSubmit &&
-        !(visionMeta && visionMeta.uncertain);
+      /* ── 提交安全网（搜题酱 doneFlags / submitSafeFlags 模型）──
+       * 只有「每一题都真的填进去了、且核对通过」才自动提交。
+       * 有一题没把握就只暂存，宁可让用户手动交，也不交一份烂卷。
+       */
+      const total = report.length;
+      const okCount = report.filter(r => r.ok).length;
+      const safeCount = report.filter(r => r.safe).length;
+      const unsafe = report.filter(r => !r.safe);
+
+      state.workSafe = {
+        total,
+        done: okCount,
+        safe: safeCount,
+        unsafeReason: unsafe.map(r => '第' + r.num + '题:' + (r.safeReason || r.reason || '未核对')).join('；')
+      };
+
+      const wantSubmit = !!state.cfg.quiz.autoSubmit && !(visionMeta && visionMeta.uncertain);
+      const canSubmit = wantSubmit && total > 0 && safeCount === total;
 
       if (canSubmit) {
-        // 实测提交按钮：<a class="btnSubmit workBtnIndex" onclick="btnBlueSubmit();">提交</a>
-        const btn = q1('a.btnSubmit') || q1('.btnSubmit')
-                 || qAll('a, button, input[type=button]')
-                      .find(b => /^\s*提\s*交\s*$/.test((b.innerText || b.value || '').trim()));
-        if (btn) {
-          await sleep(800);
-          try {
-            btn.click();
-            setStatus('📤 已提交', false);
-            await sleep(1500);
-            const confirmBtn = qAll('a, button')
-              .find(b => /^(确定|确认|是)$/.test((b.innerText || '').trim())
-                      && b.offsetParent !== null);
-            if (confirmBtn) {
-              try { confirmBtn.click(); } catch { /* ignore */ }
-            }
-          } catch (e) { log('提交失败', e?.message); }
+        setStatus('📤 全部 ' + total + ' 题已核对，提交…', true);
+        const subResult = await doSubmitQuiz();
+        if (subResult.ok) {
+          let s = '📤 已提交';
+          if (subResult.score) s += '，得分 ' + subResult.score;
+          if (subResult.passed === false) s += '（未达到及格线，已取消提交）';
+          setStatus(s, false);
         } else {
-          setStatus(statusText + ' · 未找到提交按钮', false);
+          setStatus(statusText + ' · 提交失败：' + (subResult.reason || '未知'), false);
         }
+      } else if (wantSubmit && total > 0) {
+        // 有题没核对上 → 不硬交，改暂存（成绩优先）
+        const ts = await doTmpSave();
+        setStatus(
+          statusText + ' · ⚠ ' + (total - safeCount) + ' 题未核对通过，未自动提交' +
+          (ts.ok
+            ? '，已暂存答案，请自查后手动提交'
+            : '（暂存失败：' + (ts.reason || '') + '），请自查后手动提交'),
+          false
+        );
+        log('提交安全网拦截', state.workSafe);
       } else if (state.cfg.quiz.autoSubmit && visionMeta && visionMeta.uncertain) {
-        setStatus(statusText + ' · 因不确定未自动提交', false);
+        setStatus(statusText + ' · 因视觉不确定未自动提交', false);
       } else if (!state.cfg.quiz.autoSubmit) {
         setStatus(statusText + ' · 未自动提交（请检查后手动提交）', false);
       }
@@ -1471,6 +2245,12 @@ if (!window.__CS_BOOTED__) {
    *   3. 都没找到 → 报告到底了
    */
   function clickNext() {
+    // 平台已经把「下一节」藏起来了 → 整门课学完，别再点空气
+    if (isCourseComplete()) {
+      log('下一节按钮不可见，判定整门课已完成');
+      return false;
+    }
+
     // ── 第一层：课程树精准跳转 ──
     try {
       const nextNode = findNextUnfinishedNode();
@@ -1489,7 +2269,13 @@ if (!window.__CS_BOOTED__) {
       // 避免点到被隐藏的按钮
       if (el.offsetParent === null && t !== '下一节') continue;
       log('点击下一节按钮: ' + s);
-      try { el.click(); return true; } catch { /* ignore */ }
+      try {
+        // 搜题酱细节：学习通常把 href 写成 javascript:;，
+        // 直接点可能触发导航/刷新，先摘掉 href 再点更稳。
+        el.removeAttribute('href');
+        el.click();
+        return true;
+      } catch { /* ignore */ }
     }
 
     // ── 第三层：按文字找 ──
@@ -1500,7 +2286,11 @@ if (!window.__CS_BOOTED__) {
       });
     if (byText) {
       log('按文字点击下一节');
-      try { byText.click(); return true; } catch { /* ignore */ }
+      try {
+        byText.removeAttribute('href');
+        byText.click();
+        return true;
+      } catch { /* ignore */ }
     }
 
     return false;
@@ -1651,6 +2441,78 @@ if (!window.__CS_BOOTED__) {
   }
 
   /**
+   * 找下一个「还没试过」的内容标签
+   *
+   * 为什么需要 tabTried：
+   *   方案 B 会在标签间切换。如果两个内容标签都做完了，
+   *   单纯的 findNextContentTab 会在两者之间无限来回切。
+   *   记下试过的，全部试过就说明本节真的完了。
+   */
+  function findUntriedContentTab() {
+    const tabs = listChapterTabs();
+    if (tabs.length <= 1) return null;
+
+    const tried = state.tabTried || [];
+    const curIdx = tabs.findIndex(t => t.active);
+
+    const order = [];
+    for (let i = curIdx + 1; i < tabs.length; i++) order.push(tabs[i]);
+    for (let i = 0; i < curIdx; i++) order.push(tabs[i]);
+
+    for (const t of order) {
+      if (!isContentTab(t.title)) continue;
+      if (tried.includes(t.id)) continue;
+      return t;
+    }
+    return null;
+  }
+
+  /**
+   * 切到承载任务点的标签（方案 B）
+   *
+   * 严格按用户要求：只切「确实承载任务点」的内容型标签，
+   * 切完等页面加载，然后继续由子 frame 干活。
+   * 返回 true = 本次 tick 已处理完，调用方直接 return。
+   */
+  async function switchToTaskTab(fromTab, prefix) {
+    try {
+      if (fromTab?.id) {
+        if (!Array.isArray(state.tabTried)) state.tabTried = [];
+        if (!state.tabTried.includes(fromTab.id)) state.tabTried.push(fromTab.id);
+      }
+
+      const target = findUntriedContentTab();
+      if (!target) return false;
+
+      setStatus(prefix + target.title + '」，切换处理', true);
+
+      const epoch = state.routeEpoch;
+      if (!switchToTab(target)) return false;
+
+      await sleep(2500);
+
+      // 期间页面已经跳走 → 这次切换的后续动作全部作废（搜题酱 STALE 检查）
+      if (isStale(epoch)) {
+        log('切换标签期间路由已变化，丢弃本次后续动作');
+        return true;
+      }
+
+      // 主动换代际：旧标签里在途的异步操作不许写回新标签
+      bumpRouteEpoch();
+      scrollTicksCleanup();
+      state.docDone = false;
+      state.docNextAt = 0;
+      state.videoDone = true;
+      state.videoPercent = 0;
+      state.quizDoneSig = '';
+      return true;
+    } catch (e) {
+      log('切换任务标签失败', e?.message);
+      return false;
+    }
+  }
+
+  /**
    * 当前标签的内容是否已经做完
    *
    * 注意：视频/题目可能在子 iframe 里，本帧查询不到，
@@ -1662,7 +2524,7 @@ if (!window.__CS_BOOTED__) {
       const v = q1('video');
       if (v) {
         if (!isFinite(v.duration) || v.duration <= 0) return false;   // 时长没出来 → 没做完
-        const th = Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD;
+        const th = readVideoThreshold();
         if (v.currentTime / v.duration < th) return false;
       }
 
@@ -1674,6 +2536,97 @@ if (!window.__CS_BOOTED__) {
 
       return true;
     } catch { return false; }
+  }
+
+  /**
+   * 视频看完后，下滑检查这一页还有没有别的任务点
+   *
+   * 用户要求：视频看完不要直接切标签，
+   *          先往下滚看看还有没有测验/文档等任务点。
+   *
+   * @returns {boolean} true = 做了滚动动作，应该让位
+   */
+  async function scrollToFindMoreTask() {
+    try {
+      const se = document.scrollingElement || document.documentElement;
+      if (!se) return false;
+
+      const maxTop = se.scrollHeight - se.clientHeight;
+      if (maxTop < 200) return false;
+
+      const now = Date.now();
+      if (state.docNextAt && now < state.docNextAt) return true;
+
+      const cur = se.scrollTop;
+      if (cur >= maxTop - 20) {
+        state.docDone = true;
+        return false;
+      }
+
+      const vh = se.clientHeight || window.innerHeight;
+      const step = Math.max(150, Math.round(vh * 0.75));
+      const next = Math.min(cur + step, maxTop);
+
+      se.scrollTop = next;
+      try { se.dispatchEvent(new Event('scroll', { bubbles: true })); } catch { /* ignore */ }
+
+      state.docNextAt = now + 1500;
+      state.docTarget = '整页';
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 采集当前章节的任务点明细
+   *
+   * 关键：.ans-job-icon 在 cards 帧（子 iframe），顶层查不到。
+   * 所以用缓存 + 子帧主动上报的方式。
+   *
+   * 子帧在 runVideo / runQuiz 里会调用 reportTaskDetail() 上报，
+   * 顶层从 state.taskDetailCache 里读。
+   */
+  function collectTaskPointDetail() {
+    try {
+      // ① 本帧有就直接采（cards 帧会走这里）
+      const icons = qAll('[class*="ans-job-icon"]');
+      if (icons.length) {
+        const items = icons.map((el, i) => {
+          const cls = (el.className || '').toString();
+          const aria = el.getAttribute('aria-label') || '';
+          const done = /任务点已完成/.test(aria);
+
+          let kind = '任务';
+          if (/ans-job-video/.test(cls)) kind = '视频';
+          else if (/ans-job-work|ans-job-homework/.test(cls)) kind = '测验';
+          else if (/ans-job-doc|ans-job-insertdoc/.test(cls)) kind = '文档';
+          else if (/ans-job-pdf/.test(cls)) kind = 'PDF';
+
+          if (kind === '任务') {
+            try {
+              const card = el.closest('.ans-attach-ct, .ans-attach-online') || el.parentElement;
+              const t = (card?.innerText || '').slice(0, 40);
+              if (/测验|作业|测试/.test(t)) kind = '测验';
+              else if (/视频|微课/.test(t)) kind = '视频';
+              else if (/文档|教材|PPT/i.test(t)) kind = '文档';
+            } catch { /* ignore */ }
+          }
+
+          return { index: i + 1, kind, done };
+        });
+
+        const detail = { total: items.length, done: items.filter(x => x.done).length, items };
+        // 缓存一份，供顶层用
+        try { state.taskDetailCache = detail; } catch { /* ignore */ }
+        return detail;
+      }
+
+      // ② 本帧没有 → 用缓存（顶层走这里）
+      if (state.taskDetailCache && state.taskDetailCache.total > 0) {
+        return state.taskDetailCache;
+      }
+
+      return null;
+    } catch { return null; }
   }
 
   /**
@@ -1693,6 +2646,374 @@ if (!window.__CS_BOOTED__) {
    *
    * @returns {{ done:boolean, source:string } | null}  null = 本页没有视频任务点
    */
+  /**
+   * 子帧上报任务点明细给顶层
+   *
+   * 因为 .ans-job-icon 只在 cards 帧里有，
+   * 顶层要显示明细必须靠子帧上报。
+   */
+  function reportTaskDetail() {
+    try {
+      if (IS_TOP) return;   // 顶层不报，只收
+      const detail = collectTaskPointDetail();
+      if (!detail || !detail.total) return;
+
+      Host.sendNoWait('frame:taskdetail', { detail });
+    } catch { /* ignore */ }
+  }
+
+  /* ============================================================
+   * 4c. 任务队列（蓝本：大学搜题酱 brushCx + CX_TASK_CATALOG，v1.3.0）
+   *
+   * 搜题酱刷课的核心不是「猜当前标签页」，而是：
+   *   ① 扫出本节的 iframe 任务清单（任务卡在 cards 帧 d1 里）
+   *   ② 用 URL 里的模块名判断任务类型（video / work / pdf / ...）
+   *   ③ 按 DOM 顺序排队，一项一项做；队列耗尽才允许翻页
+   *   ④ #prevNextFocusNext 被平台设成 display:none → 整门课学完
+   *
+   * 我们比它多做一步：完成状态读平台自己的任务点标记
+   * （aria-label / .ans-job-finished），而不是只凭播放器进度推断。
+   * ============================================================ */
+
+  /**
+   * 任务目录
+   *
+   * 原样移植自搜题酱的 CX_TASK_CATALOG（SideBar.d70b0916.js 模块 3oCgF）：
+   *   helper       用哪个执行器（video=播放器，exam=答题）
+   *   queueDrained 队列耗尽后的动作（text=纯图文，直接翻页）
+   *   rawTypes     能映射到本类型的 URL 模块名
+   */
+  const CX_TASK_CATALOG = {
+    video:        { helper: 'video', queueDrained: 'default', rawTypes: ['video'],        label: '视频' },
+    audio:        { helper: 'video', queueDrained: 'default', rawTypes: ['audio'],        label: '音频' },
+    pdf:          { helper: 'video', queueDrained: 'default', rawTypes: ['pdf'],          label: 'PDF' },
+    work:         { helper: 'exam',  queueDrained: 'default', rawTypes: ['work'],         label: '测验' },
+    pack:         { helper: 'exam',  queueDrained: 'default', rawTypes: ['pack'],         label: '作业包' },
+    bbsReply:     { helper: 'exam',  queueDrained: 'none',    rawTypes: [],               label: '讨论回复' },
+    bbsTopic:     { helper: 'exam',  queueDrained: 'default', rawTypes: [],               label: '讨论' },
+    bbsTopicList: { helper: 'exam',  queueDrained: 'default', rawTypes: [],               label: '讨论列表' },
+    text:         { helper: 'video', queueDrained: 'text',    rawTypes: [],               label: '图文' }
+  };
+
+  /**
+   * 从 iframe 地址提取原始任务类型
+   *
+   * 实测任务地址形如：
+   *   /mooc-ans/ananas/modules/video/index.html?...
+   *   /mooc-ans/ananas/modules/work/index.html?...
+   *   /mooc-ans/ananas/modules/pdf/index.html?...
+   *   /mooc-ans/ananas/modules/zt/topicAttachment/...
+   *
+   * 正则与搜题酱一致：/\/ananas\/modules\/([^/?#]+)/
+   */
+  function extractCxRawTaskType(src) {
+    if (!src) return '';
+    let path = src;
+    try {
+      path = new URL(src, location.href).pathname;
+    } catch { /* 相对地址就按原文匹配 */ }
+    const m = path.match(/\/ananas\/modules\/([^/?#]+)/);
+    if (m) return String(m[1]).toLowerCase();
+    if (path.includes('/ananas/dialog/ballchart')) return 'ballchart';
+    return '';
+  }
+
+  /** 原始类型 → 目录类型（找不到就返回空） */
+  function resolveCxTaskType(raw) {
+    if (!raw) return '';
+    for (const type of Object.keys(CX_TASK_CATALOG)) {
+      if (CX_TASK_CATALOG[type].rawTypes.includes(raw)) return type;
+    }
+    return '';
+  }
+
+  /** 类型的中文名 */
+  function taskLabel(type) {
+    return CX_TASK_CATALOG[type]?.label || (type ? String(type) : '任务');
+  }
+
+  /**
+   * 是否支持自动处理
+   *
+   * 搜题酱 catalog 里没有的类型一律算「不支持」：
+   *   innerbook / insertbbs / live / downloadfile / questionnaire / zt / flash / ballchart
+   * 这类任务我们从队列里标 skipped，不阻塞翻页（用户可事后自查）。
+   */
+  function isSupportedCxTask(type) {
+    return Object.prototype.hasOwnProperty.call(CX_TASK_CATALOG, type)
+      && ['video', 'audio', 'pdf', 'work', 'pack', 'text'].includes(type);
+  }
+
+  /** 顶层：拿到 d1（knowledge/cards）文档；拿不到返回 null（跨域/尚未加载） */
+  function getStudyDoc() {
+    try {
+      const fr = document.getElementById('iframe');
+      return fr?.contentDocument || null;
+    } catch { return null; }
+  }
+
+  /** 读任务点图标状态（平台标记优先，拿不到返回 null=未知） */
+  function readIconDone(icon) {
+    if (!icon) return null;
+    try {
+      const aria = icon.getAttribute('aria-label') || '';
+      if (/任务点已完成/.test(aria)) return true;
+      if (/任务点未完成/.test(aria)) return false;
+      const cls = String(icon.className || '');
+      if (/ans-job-icon-clear/.test(cls)) return true;
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  /** 判断任务卡是否已完成（平台标记优先，拿不到返回 null=未知） */
+  function readCardTaskDone(card) {
+    if (!card) return null;
+    try {
+      if (/ans-job-finished/.test(String(card.className || ''))) return true;
+      return readIconDone(card.querySelector('[class*="ans-job-icon"]'));
+    } catch { return null; }
+  }
+
+  /**
+   * 找 iframe 所在的任务卡（用于配对任务点图标）
+   *
+   * 实测 DOM 没有固定 class 包一层，所以逐层上溯：
+   * 找到第一个「只含 1 个任务点图标」的祖先，才是这一项的卡片。
+   * 直接取太高的祖先会把整页的图标都算进来，状态就串了。
+   */
+  function closestTaskCard(node) {
+    try {
+      let cur = node.parentElement;
+      for (let i = 0; i < 8 && cur; i++) {
+        const icons = cur.querySelectorAll?.('[class*="ans-job-icon"]');
+        if (icons && icons.length === 1) return cur;
+        if (icons && icons.length > 1) break;   // 已经到列表层，不能再往上
+        cur = cur.parentElement;
+      }
+      return node.closest('.ans-attach-ct, .ans-attach-online, .ans-attach, .ans-card-wrap, .ans-job-wrap') || null;
+    } catch { return null; }
+  }
+
+  /**
+   * 扫描任务（对应搜题酱 brushCx 的 iframe 扫描）
+   *
+   * @param {Document} doc 默认当前文档；顶层传 d1 文档
+   * @returns {Array} 任务列表
+   */
+  function scanCxTasks(doc) {
+    const d = doc || document;
+    const tasks = [];
+    let iframes = [];
+    try { iframes = [...d.getElementsByTagName('iframe')]; } catch { iframes = []; }
+
+    for (let i = 0; i < iframes.length; i++) {
+      const fr = iframes[i];
+      const src = fr.getAttribute('src') || '';
+      // 搜题酱的过滤：只认 /ananas/modules/ 和 ballchart
+      if (!/\/ananas\/modules\//.test(src) && !/\/ananas\/dialog\/ballchart/.test(src)) continue;
+      // 引用块里的 iframe 归 blockquote 管，避免重复
+      try { if (fr.closest('.cmd-autoblockquote')) continue; } catch { /* ignore */ }
+
+      const rawType = extractCxRawTaskType(src);
+      let type = resolveCxTaskType(rawType) || rawType || 'unknown';
+
+      // 作业包（zt/topicAttachment）：搜题酱根据「展开」按钮判定
+      let packExpanded = false;
+      if (rawType === 'zt') {
+        try {
+          const btn = fr.contentDocument?.querySelector('.pack-btn');
+          packExpanded = !!btn && (btn.innerText || '').includes('展开');
+        } catch { /* 跨域 */ }
+      }
+      const source = packExpanded ? 'pack' : 'iframe';
+
+      const card = closestTaskCard(fr);
+      let done = readCardTaskDone(card);
+      if (done === null) {
+        // 兜底：任务卡与 iframe 顺序一致，按序号配对
+        try {
+          const icons = d.querySelectorAll('[class*="ans-job-icon"]');
+          done = readIconDone(icons[tasks.length]);
+        } catch { /* ignore */ }
+      }
+      const title = (card?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+
+      tasks.push({
+        order: tasks.length,
+        index: i,
+        src,
+        rawType,
+        source,
+        type: packExpanded ? 'pack' : type,
+        label: taskLabel(packExpanded ? 'pack' : type),
+        supported: isSupportedCxTask(packExpanded ? 'pack' : type),
+        done,
+        title
+      });
+    }
+
+    // 引用块（blockquote）里的任务：学习通把它塞在折叠块里，展开后才加载 iframe
+    try {
+      for (const wrap of d.querySelectorAll('.blockquote-wrap')) {
+        const inner = wrap.querySelector('.cmd-autoblockquote');
+        if (!inner) continue;
+        const fr = inner.querySelector('iframe');
+        const src = fr?.getAttribute('src') || '';
+        const done = readCardTaskDone(wrap);
+        tasks.push({
+          order: tasks.length,
+          index: fr ? iframes.indexOf(fr) : -1,
+          src,
+          rawType: 'work',
+          source: 'blockquote',
+          type: 'work',
+          label: '测验（折叠）',
+          supported: true,
+          done,
+          title: (wrap.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 40)
+        });
+      }
+    } catch { /* ignore */ }
+
+    return tasks;
+  }
+
+  /**
+   * 刷新任务队列
+   *
+   * 顶层从 d1 扫（任务卡在 cards 帧）。
+   * 非顶层只扫自己文档（单层页面兜底），不覆盖顶层结果。
+   */
+  function refreshTaskQueue() {
+    try {
+      let tasks = null;
+
+      if (IS_TOP) {
+        const d1 = getStudyDoc();
+        if (d1) tasks = scanCxTasks(d1);
+        if ((!tasks || !tasks.length) && qAll('iframe[src*="/ananas/"]').length) {
+          tasks = scanCxTasks(document);
+        }
+      } else {
+        tasks = scanCxTasks(document);
+      }
+
+      if (!tasks) return state.taskQueue;
+
+      const sig = tasks.map(t => [
+        t.type, t.done === true ? 1 : t.done === false ? 0 : -1, t.supported ? 1 : 0
+      ].join(':')).join('|');
+
+      if (sig !== state.taskQueueSig) {
+        state.taskQueueSig = sig;
+        state.taskQueue = tasks;
+        log('任务队列更新', tasks.map(t => t.label + (t.done === true ? '✓' : t.done === false ? '…' : '?')));
+      }
+      state.taskQueueAt = Date.now();
+      return state.taskQueue;
+    } catch { return state.taskQueue; }
+  }
+
+  /** 未完成且受支持的任务（只看未完成的 —— 用户明确要求） */
+  function openCxTasks() {
+    return state.taskQueue.filter(t => t.supported && t.done !== true);
+  }
+
+  /** 明确未完成的任务（done === false） */
+  function todoCxTasks() {
+    return state.taskQueue.filter(t => t.supported && t.done === false);
+  }
+
+  /** 不支持的任务（会被跳过，不阻塞） */
+  function unsupportedCxTasks() {
+    return state.taskQueue.filter(t => !t.supported && t.done !== true);
+  }
+
+  /** 队列是否全部完成（未知按已完成算，避免死等） */
+  function isQueueDone() {
+    return state.taskQueue.length > 0 && openCxTasks().length === 0;
+  }
+
+  /** 队列摘要，给状态栏用：任务 2/3 · 视频✓ 测验… */
+  function queueSummary() {
+    const q = state.taskQueue;
+    if (!q.length) return '';
+    const total = q.length;
+    const done = q.filter(t => t.done === true).length;
+    const cur = q.find(t => t.supported && t.done !== true);
+    const bits = q.map(t => {
+      let mark = '?';
+      if (t.done === true) mark = '✓';
+      else if (!t.supported) mark = '⏭';
+      else mark = '…';
+      return t.label + mark;
+    });
+    return '任务 ' + done + '/' + total
+      + (cur ? ' · 当前：' + cur.label : '')
+      + '（' + bits.join(' ') + '）';
+  }
+
+  /* ------------------------------------------------------------
+   * 路由指纹 / 代际（对应搜题酱 routeEpoch）
+   *
+   * 学习通是 SPA：切标签、点下一节都会换 iframe，但顶层 href 不一定变。
+   * 切完之后再拿「旧页面」的异步结果去操作新页面，会点错、填错。
+   * 做法：每个异步步骤开始时记下 epoch，回来后比对，变了就放弃。
+   * ------------------------------------------------------------ */
+
+  function routeFingerprint() {
+    let mainIframeSrc = '';
+    let mainDocumentHref = '';
+    try {
+      const fr = document.getElementById('iframe');
+      mainIframeSrc = fr?.src || '';
+      try {
+        mainDocumentHref = fr?.contentDocument?.URL
+          || fr?.contentWindow?.location?.href || '';
+      } catch { mainDocumentHref = ''; }
+    } catch { /* ignore */ }
+    return { href: location.href, mainIframeSrc, mainDocumentHref };
+  }
+
+  function sameRoute(a, b) {
+    if (!a || !b) return false;
+    return a.href === b.href
+      && a.mainIframeSrc === b.mainIframeSrc
+      && a.mainDocumentHref === b.mainDocumentHref;
+  }
+
+  /** 路由变了：代际 +1，让所有在途的异步步骤自行作废 */
+  function bumpRouteEpoch() {
+    state.routeEpoch++;
+    state.routeFp = routeFingerprint();
+    state.taskDetailCache = null;
+    state.taskQueueSig = '';
+  }
+
+  /** 当前异步步骤是否已过期（路由变了） */
+  function isStale(epoch) {
+    return epoch !== state.routeEpoch;
+  }
+
+  /**
+   * 整门课是否已学完（搜题酱的判据）
+   *
+   * 实测：最后一节时学习通把 #prevNextFocusNext 设成 display:none。
+   * 这时点「下一节」没有意义，应当停止并提示用户。
+   */
+  function isCourseComplete() {
+    try {
+      const btn = document.querySelector('#prevNextFocusNext');
+      if (btn) {
+        const cs = getComputedStyle(btn);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+        const r = btn.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+
   function readVideoTaskState() {
     try {
       // ① aria-label 最可靠
@@ -1934,11 +3255,10 @@ if (!window.__CS_BOOTED__) {
     if (now - state.lastReport > 500) {
       state.lastReport = now;
       try {
-        chrome.runtime.sendMessage({
-          type: 'frame:status',
+        Host.sendNoWait('frame:status', {
           status: text,
           busy: !!busy
-        }).catch(() => {});
+        });
       } catch { /* ignore */ }
     }
 
@@ -1951,6 +3271,35 @@ if (!window.__CS_BOOTED__) {
 
   async function tick() {
     if (state.stopped) return;
+
+    /* ── 路由指纹 / 代际（搜题酱 routeEpoch 思路）──
+     * 学习通是 SPA：切标签时顶层 href 不变，只有 #iframe 的 src 会换。
+     * 所以不能只比 location.href，要连 iframe src / iframe 文档地址一起比。
+     * 变了就 +1 代际，让在途的异步步骤自行作废，避免把旧页面的
+     * 填写结果/提交动作写到新页面上。 */
+    const fp = routeFingerprint();
+    if (!sameRoute(fp, state.routeFp)) {
+      const prevHref = state.routeFp?.href || '';
+      const prevChapter = prevHref.match(/chapterId=(\d+)/)?.[1] || '';
+      const nowChapter = location.href.match(/chapterId=(\d+)/)?.[1] || '';
+      const chapterChanged = !state.routeFp || prevChapter !== nowChapter;
+
+      bumpRouteEpoch();
+      state.routeFp = fp;
+
+      if (chapterChanged) {
+        state.tabTried = [];
+        state.chapterEnterAt = Date.now();
+        state.docDone = false;
+        state.docNextAt = 0;
+        state.quizDoneSig = '';
+        state.quizSig = '';
+        state.videoDone = true;
+        state.videoPercent = 0;
+        scrollTicksCleanup();
+      }
+      log('路由变化 → 代际 ' + state.routeEpoch + (chapterChanged ? '（换节）' : '（页内切换）'));
+    }
 
     // 页面跳转了 → 重置
     if (location.href !== state.lastHref) {
@@ -1982,6 +3331,9 @@ if (!window.__CS_BOOTED__) {
       }
     }
 
+    // 子帧：把本帧看得到的任务点明细上报给顶层（面板要用）
+    if (!IS_TOP) reportTaskDetail();
+
     /* ────────────────────────────────────────────
      * 顶层：只做协调，不碰内容
      *
@@ -1996,6 +3348,9 @@ if (!window.__CS_BOOTED__) {
       // 而不是替用户切换到他想要的标签。
       // 只看当前标签的内容：有视频就播、有文档就滚、有题就答，
       // 都没有就滚到底点下一节。
+
+      // 顶层也检测视频弹题（弹题可能在顶层 iframe）
+      if (await handleVideoQuiz()) return;
 
       // 顶层也可能直接承载内容（单层页面、或学习通把视频放顶层时），
       if (await runVideo()) {
@@ -2022,10 +3377,10 @@ if (!window.__CS_BOOTED__) {
         const did = await runQuiz().catch(e => { log('测验异常', e?.message); return false; });
         if (did) return;
       }
-      if (!state.docDone && await runDocument()) {
-        setStatus('📄 浏览中（' + (state.docTarget || '内容区') + '）', true);
-        return;
-      }
+      // ⚠️ 顶层不滚自己的文档！
+      // 顶层的滚动条是页面外框（目录树、按钮区），
+      // 滚它不代表学习行为，还会让扩展误以为"还有活要干"而卡住。
+      // 真正的文档滚动交给子 frame（cards 帧）。
       await tickTop();
       return;
     }
@@ -2033,6 +3388,9 @@ if (!window.__CS_BOOTED__) {
     /* ────────────────────────────────────────────
      * 子 frame：处理自己文档里的内容
      * ──────────────────────────────────────────── */
+
+    // (0) 视频弹题优先！播放中弹题不答，视频会一直卡住
+    if (await handleVideoQuiz()) return;
 
     // (1) 视频
     if (await runVideo()) {
@@ -2087,15 +3445,21 @@ if (!window.__CS_BOOTED__) {
    *   3. 全都完成 → 翻到下一个未完成章节
    */
   async function tickTop() {
+    // ── 0. 先刷新任务队列，面板要跟着动 ──
+    refreshTaskQueue();
+
     // ── 1. 有 frame 在忙就先等着 ──
     let busyElsewhere = false;
     try {
-      const r = await chrome.runtime.sendMessage({ type: 'tab:busy' });
+      const r = await Host.send('tab:busy');
       busyElsewhere = !!r?.busy;
+      // 子帧上报的任务点明细（d1 才看得到 .ans-job-icon）经后台带回来
+      if (r?.agg?.detail) state.taskDetailCache = r.agg.detail;
     } catch { busyElsewhere = false; }
 
     if (busyElsewhere) {
-      setStatus('⏳ 学习进行中…', true);
+      const qs = queueSummary();
+      setStatus('⏳ 学习进行中…' + (qs ? ' · ' + qs : ''), true);
       return;
     }
 
@@ -2107,121 +3471,141 @@ if (!window.__CS_BOOTED__) {
     }
 
     /* ────────────────────────────────────────────────
-     * 3. 任务点校验 + 标签切换
+     * 3. 任务队列：只看还没完成的（搜题酱模型，v1.3.0）
      *
-     * 用户策略（方案 B）：
-     *   **任务点在别的标签时，自动切过去做完，再翻页。**
-     *
-     * 判断顺序：
-     *   ① 当前标签是纯文字（学习要点）但别处有内容型标签 → 切过去
-     *   ② 当前标签是内容型且已做完，别处还有内容型标签 → 切过去
-     *   ③ 当前标签是内容型但没做完 → 原地等，别切走
-     *   ④ 所有内容型标签都做完了 → 检查任务点，过了就翻页
+     * 顺序（用户要求，别搞反）：
+     *   a. 当前标签的队列做完 → 先下滑确认没别的任务点
+     *   b. 再切到「还没试过的」内容标签（方案 B）
+     *   c. 队列全部完成 → 才允许翻页
      * ──────────────────────────────────────────────── */
 
     const curTab = activeChapterTab();
-    const chkPre = isCurrentChapterDone();
+    const queueDone = isQueueDone();
+    const chk = isCurrentChapterDone();
 
-    // 只要本节点还没标记完成，就尝试切到任务点所在的标签
-    if (!chkPre.done) {
-      // ① 当前是纯文字标签 → 切到内容型
+    // 3.0 整门课学完：平台把「下一节」按钮藏起来了（搜题酱判据）
+    if (isCourseComplete() || (readStudyState()?.unfinishCount === 0)) {
+      setStatus('🎓 整门课程已全部学完' + (state.score ? '，最近得分 ' + state.score : ''), false);
+      state.stopped = true;
+      return;
+    }
+
+    if (!queueDone && !chk.done) {
+      // ① 当前是纯文字标签 → 切到内容型（任务点所在标签）
       if (curTab && !isContentTab(curTab.title)) {
-        const target = findNextContentTab(false);
-        if (target) {
-          setStatus('↪ 任务点在「' + target.title + '」，切过去处理', true);
-          if (switchToTab(target)) {
-            await sleep(2500);
-            scrollTicksCleanup();
-            state.docDone = false;
-            state.docNextAt = 0;
-            state.videoDone = true;
-            state.videoPercent = 0;
-            state.quizDoneSig = '';
-            return;
-          }
+        if (await switchToTaskTab(curTab, '↪ 任务点在「')) return;
+      }
+
+      // ①.5 当前标签的队列做完了 → 先下滑，别急着切（用户明确要求）
+      if (curTab && isContentTab(curTab.title) && currentTabContentDone() && !state.docDone) {
+        if (await scrollToFindMoreTask()) {
+          setStatus('📄 「' + curTab.title + '」任务点完成，下滑检查其他任务点…', true);
+          return;
         }
       }
 
-      // ② 当前是内容型且已做完 → 切到还有没做完的标签
+      // ② 当前内容型标签做完 → 切到下一个「没试过的」内容标签
       if (curTab && isContentTab(curTab.title) && currentTabContentDone()) {
-        const target = findNextContentTab(false);
-        if (target) {
-          setStatus('↪ 「' + curTab.title + '」已处理完，切到「' + target.title + '」', true);
-          if (switchToTab(target)) {
-            await sleep(2500);
-            scrollTicksCleanup();
-            state.docDone = false;
-            state.docNextAt = 0;
-            state.videoDone = true;
-            state.videoPercent = 0;
-            state.quizDoneSig = '';
-            return;
-          }
-        }
+        if (await switchToTaskTab(curTab, '↪ 「' + curTab.title + '」已处理完，切到「')) return;
       }
     }
 
-    // ── 任务点四级校验 ──
-    const chk = isCurrentChapterDone();
+    // ── 任务点校验 ──
+    const chapterOk = queueDone || chk.done;
 
-    if (!chk.done) {
-      // A. 视频未达标 → 原地等，继续播
-      if (chk.level === 'video' || chk.level === 'video-state') {
+    if (!chapterOk) {
+      // A. 视频未达标 → 显示实时进度 + 平台要求的阈值
+      if (chk.level === 'video' || chk.level === 'video-state' || chk.level === 'video-mark-todo') {
         const pct = Math.round((chk.videoPercent ?? state.videoPercent ?? 0) * 100);
-        setStatus('📺 视频 ' + pct + '%（需 ≥' + Math.round((Number(state.cfg.auto.videoThreshold) || VIDEO_THRESHOLD) * 100) + '%，继续播放）', true);
+        const need = Math.round((readVideoThreshold() || state.cfg.auto.videoThreshold || 0.9) * 100);
+        const qs = queueSummary();
+        setStatus('📺 视频 ' + pct + '% / 需 ' + need + '%' + (qs ? ' · ' + qs : ''), true);
         await sleep(state.cfg.auto.loopInterval || 2500);
         return;
       }
 
-      // B/C. 当前页面还有活可干 → 继续干
+      // B. 当前页面还有活可干 → 状态栏显示明细
       const hasVideoHere = !!q1('video');
       const hasQuizHere = hasQuiz();
-      const hasDocHere = !state.docDone && !!findScrollTarget();
+      const hasDocHere = !IS_TOP && !state.docDone && !!findScrollTarget();
+
       if (hasVideoHere || hasQuizHere || hasDocHere) {
-        const todo = chk.todoCount || 0;
-        setStatus('⏳ 处理当前内容中（本章还有 ' + todo + ' 个任务点）', true);
+        let msg = '⏳ ';
+
+        if (hasVideoHere) {
+          const v = q1('video');
+          const pct = v && isFinite(v.duration) && v.duration > 0
+            ? Math.round(v.currentTime / v.duration * 100) : 0;
+          msg += '视频 ' + pct + '%';
+        } else if (hasQuizHere) {
+          const qn = qAll('.TiMu, .singleQuesId').length;
+          const filled = qAll('.check_answer, .check_answer_dx').length;
+          msg += '测验 ' + qn + ' 题（已填 ' + filled + ' 处）';
+        } else {
+          msg += '文档滚动中';
+        }
+
+        const qs = queueSummary();
+        if (qs) msg += ' · ' + qs;
+        setStatus(msg, true);
         await sleep(state.cfg.auto.loopInterval || 2500);
         return;
       }
 
-      // D. 实在做不了 → 按配置决定跳过还是停
-      const todo = chk.todoCount || 0;
+      // C. 做不了 → 按配置
+      const queueOpen = openCxTasks();
+      const todo = queueOpen.length || chk.todoCount || 0;
       const where = describeWhereTaskPointIs();
+      const qs = queueSummary();
+      const unsup = unsupportedCxTasks();
 
       if (!state.cfg.auto.skipUnfinished) {
         setStatus(
-          '⏸ 本章还有 ' + todo + ' 个任务点未完成' +
-          (where ? '（在「' + where + '」标签）' : '') +
-          '。请手动处理，或在设置里开启「跳过未完成」',
+          '⏸ 还有 ' + todo + ' 个任务点未完成' +
+          (qs ? '（' + qs + '）' : '') +
+          (where ? '，在「' + where + '」' : '') +
+          '。请手动处理，或开启「跳过未完成」',
           false
         );
         state.stopped = true;
         return;
       }
 
-      setStatus('⏭ 本章任务点在' + (where ? '「' + where + '」' : '其它标签') + '，按设置跳过', false);
+      setStatus(
+        '⏭ ' + (queueOpen.length
+          ? '队列里还有 ' + queueOpen.map(t => t.label).join('、') + '，按设置跳过'
+          : '任务点在' + (where ? '「' + where + '」' : '其它标签') + '，按设置跳过')
+        + (unsup.length ? '（另有 ' + unsup.length + ' 个不支持的任务点已忽略）' : ''),
+        false
+      );
       await sleep(1200);
     }
 
-    // ── 4. 本节确实完成了 ──
+    // ── 4. 队列 / 任务点都完成了 ──
+    const finalQueue = state.taskQueue;
+    const qDone = finalQueue.filter(t => t.done === true).length;
+    const finalDetail = collectTaskPointDetail();
+    const doneText = finalQueue.length
+      ? '✓ 本节任务点完成 ' + qDone + '/' + finalQueue.length
+      : (finalDetail
+          ? '✓ 任务点全部完成 ' + finalDetail.done + '/' + finalDetail.total
+          : '✓ 本节任务点已完成');
+
     if (!state.cfg.auto.autoNext) {
-      setStatus('✓ 本节任务点已完成（未开自动下一节）', false);
+      setStatus(doneText + '（未开自动下一节）', false);
       return;
     }
 
-    // 最低停留时间（防止刷太快）
     const dwellMs = (Number(state.cfg.auto.minDwellSeconds) || 0) * 1000;
     if (dwellMs > 0 && state.chapterEnterAt) {
       const stayed = Date.now() - state.chapterEnterAt;
       if (stayed < dwellMs) {
-        setStatus('✓ 本节已完成，稍候翻页（' + Math.ceil((dwellMs - stayed) / 1000) + 's）', true);
+        setStatus(doneText + '，稍候翻页（' + Math.ceil((dwellMs - stayed) / 1000) + 's）', true);
         await sleep(dwellMs - stayed);
-        // 停留结束后重新校验，防止期间状态变化
         if (!isCurrentChapterDone().done) return;
       }
     }
 
-    // ── 5. 翻页 ──
     setStatus('⏭ 切换到下一个未完成章节…', false);
     await sleep(1200);
 
@@ -2239,6 +3623,8 @@ if (!window.__CS_BOOTED__) {
 
     // ── 6. 跳转成功，重置状态 ──
     state.nextFailCount = 0;
+    state.tabTried = [];          // 新章节，标签重新计
+    bumpRouteEpoch();
     scrollTicksCleanup();
     state.docDone = false;
     state.docNextAt = 0;
@@ -2274,147 +3660,76 @@ if (!window.__CS_BOOTED__) {
 
   /* ============================================================
    * 8. 悬浮面板（仅顶层）
+   *
+   * 样式与 DOM 已抽到 src/ui/panel.js（两个形态共用一套视觉）。
+   * 这里只负责：把刷课状态喂给面板、把面板事件接回刷课逻辑。
    * ============================================================ */
 
-  const PANEL_CSS = `
-    #cs-panel{position:fixed;right:18px;bottom:18px;z-index:2147483647;
-      background:#fff;border:1px solid #d8dee4;border-radius:12px;
-      box-shadow:0 8px 28px rgba(0,0,0,.16);
-      font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
-      width:236px;overflow:hidden;color:#1f2328}
-    #cs-panel.cs-collapsed .cs-body{display:none}
-    #cs-panel .cs-head{background:linear-gradient(135deg,#2d6cdf,#3f8cff);color:#fff;
-      padding:9px 12px;font-weight:600;cursor:move;display:flex;
-      justify-content:space-between;align-items:center;user-select:none}
-    #cs-panel .cs-min{cursor:pointer;opacity:.85;padding:0 5px;font-weight:400}
-    #cs-panel .cs-body{padding:10px 12px 12px}
-    #cs-panel .cs-row{display:flex;justify-content:space-between;align-items:center;margin:7px 0}
-    #cs-panel .cs-row label{color:#57606a}
-    #cs-panel input[type=number]{width:64px;padding:3px 6px;border:1px solid #d0d7de;
-      border-radius:5px;font-size:13px}
-    #cs-panel input[type=checkbox]{transform:scale(1.15);cursor:pointer;accent-color:#2d6cdf}
-    #cs-panel .cs-btns{display:flex;gap:6px;margin-top:12px}
-    #cs-panel .cs-btns button{flex:1;padding:7px 0;border:0;border-radius:7px;
-      cursor:pointer;font-size:13px;font-weight:500;transition:.15s}
-    #cs-panel .cs-start{background:#2d6cdf;color:#fff}
-    #cs-panel .cs-start:hover{background:#255bbd}
-    #cs-panel .cs-stop{background:#e5484d;color:#fff}
-    #cs-panel .cs-stop:hover{background:#cf3c41}
-    #cs-panel .cs-gear{flex:0 0 34px;background:#f0f3f6;color:#57606a}
-    #cs-panel .cs-gear:hover{background:#e4e9ee}
-    #cs-panel .cs-status{margin-top:10px;padding-top:8px;border-top:1px dashed #e1e5ea;
-      font-size:12px;color:#57606a;word-break:break-all}
-    #cs-panel .cs-status b{color:#2d6cdf;font-weight:600}
-    #cs-panel.cs-collapsed{width:auto}
-  `;
+  /** 面板需要的配置 */
+  function panelCfg() {
+    return state.cfg || FALLBACK_CFG;
+  }
 
+  /** 挂载（幂等） */
   function ensurePanel() {
     if (!IS_TOP || !document.body) return null;
-    if (state.panel && document.documentElement.contains(state.panel)) return state.panel;
-
-    const style = document.createElement('style');
-    style.id = 'cs-panel-style';
-    style.textContent = PANEL_CSS;
-    if (!document.getElementById('cs-panel-style')) document.documentElement.appendChild(style);
-
-    const box = document.createElement('div');
-    box.id = 'cs-panel';
-    box.innerHTML = `
-      <div class="cs-head">
-        <span>学习通自动学习</span>
-        <span class="cs-min" title="折叠">—</span>
-      </div>
-      <div class="cs-body">
-        <div class="cs-row"><label>倍速</label><input type="number" id="cs-rate" step="0.25" min="1" max="4"></div>
-        <div class="cs-row"><label>静音</label><input type="checkbox" id="cs-mute"></div>
-        <div class="cs-row"><label>自动下一节</label><input type="checkbox" id="cs-next"></div>
-        <div class="cs-row"><label>文档滚动</label><input type="checkbox" id="cs-doc"></div>
-        <div class="cs-row"><label>自动作答</label><input type="checkbox" id="cs-quiz"></div>
-        <div class="cs-btns">
-          <button class="cs-start" id="cs-start">开始</button>
-          <button class="cs-stop" id="cs-stop">停止</button>
-          <button class="cs-gear" id="cs-gear" title="设置">⚙</button>
-        </div>
-        <div class="cs-status">状态：<b id="cs-status">待机</b></div>
-      </div>`;
-    document.documentElement.appendChild(box);
-
-    const el = s => box.querySelector(s);
-    const a = state.cfg.auto;
-    el('#cs-rate').value = a.rate;
-    el('#cs-mute').checked = !!a.mute;
-    el('#cs-next').checked = !!a.autoNext;
-    el('#cs-doc').checked = !!a.docAutoScroll;
-    el('#cs-quiz').checked = !!a.quizEnabled;
-
-    const save = () => {
-      const auto = {
-        ...state.cfg.auto,
-        rate: parseFloat(el('#cs-rate').value) || 2,
-        mute: el('#cs-mute').checked,
-        autoNext: el('#cs-next').checked,
-        docAutoScroll: el('#cs-doc').checked,
-        quizEnabled: el('#cs-quiz').checked
-      };
-      state.cfg = { ...state.cfg, auto };
-      chrome.runtime.sendMessage({ type: 'cfg:set', patch: { auto } }).catch(() => {});
-    };
-
-    ['#cs-rate', '#cs-mute', '#cs-next', '#cs-doc', '#cs-quiz']
-      .forEach(s => el(s).addEventListener('change', save));
-
-    el('#cs-start').onclick = () => {
-      save();
-      chrome.runtime.sendMessage({ type: 'state:set', running: true }).catch(() => {});
-      start();
-    };
-    el('#cs-stop').onclick = () => {
-      chrome.runtime.sendMessage({ type: 'state:set', running: false }).catch(() => {});
-      stop();
-    };
-    el('#cs-gear').onclick = () => {
-      chrome.runtime.sendMessage({ type: 'open:options' }).catch(() => {});
-    };
-
-    const minBtn = el('.cs-min');
-    minBtn.onclick = e => {
-      e.stopPropagation();
-      box.classList.toggle('cs-collapsed');
-      minBtn.textContent = box.classList.contains('cs-collapsed') ? '+' : '—';
-    };
-
-    // 拖动
-    const head = box.querySelector('.cs-head');
-    let drag = false, ox = 0, oy = 0;
-    head.addEventListener('mousedown', e => {
-      if (e.target === minBtn) return;
-      const r = box.getBoundingClientRect();
-      drag = true; ox = e.clientX - r.left; oy = e.clientY - r.top;
-      e.preventDefault();
+    if (!window.CSPanel) {
+      log('CSPanel 未加载，面板不可用');
+      return null;
+    }
+    const box = window.CSPanel.mount({
+      getCfg: panelCfg,
+      onCfgChange: (auto) => {
+        state.cfg = { ...state.cfg, auto };
+        Host.sendNoWait('cfg:set', { patch: { auto } });
+      },
+      onStart: () => {
+        Host.setRunning(true);
+        start();
+      },
+      onStop: () => {
+        Host.setRunning(false);
+        stop();
+      },
+      onOpenOptions: () => Host.openOptions()
     });
-    document.addEventListener('mousemove', e => {
-      if (!drag) return;
-      box.style.left = (e.clientX - ox) + 'px';
-      box.style.top = (e.clientY - oy) + 'px';
-      box.style.right = 'auto'; box.style.bottom = 'auto';
-    });
-    document.addEventListener('mouseup', () => { drag = false; });
-
     state.panel = box;
     return box;
   }
 
+  /**
+   * 渲染状态
+   *
+   * 三层信息：
+   *   1. 状态文字（当前在干什么）
+   *   2. 任务队列 / 任务点明细（哪些完成、哪些没完成）
+   *   3. 进度条（完成比例）
+   */
   function renderStatus() {
-    if (!IS_TOP || !state.panel) return;
-    const s = state.panel.querySelector('#cs-status');
-    if (s && s.textContent !== state.status) s.textContent = state.status;
+    if (!IS_TOP || !state.panel || !window.CSPanel) return;
+
+    let detail = null;
+    try { detail = collectTaskPointDetail(); } catch { /* ignore */ }
+
+    window.CSPanel.render({
+      status: state.status,
+      queue: state.taskQueue || [],
+      detail,
+      videoPercent: state.videoPercent
+    });
   }
+
 
   /* ============================================================
    * 9. 消息处理
+   *
+   * 用 Host.on 注册，不直接绑 chrome.runtime.onMessage ——
+   * 脚本版由宿主的跨帧总线投递同样的消息，这里逻辑完全一致。
+   * 回调收到 (msg, reply)，reply 用于同步应答（扩展侧会自动回 ack）。
    * ============================================================ */
 
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  Host.on((msg, reply) => {
+    const sendResponse = reply || (() => {});
     (async () => {
       try {
         switch (msg?.type) {
@@ -2488,7 +3803,6 @@ if (!window.__CS_BOOTED__) {
         sendResponse({ ok: false, error: e?.message || String(e) });
       }
     })();
-    return true;
   });
 
   /* ============================================================
@@ -2502,8 +3816,8 @@ if (!window.__CS_BOOTED__) {
 
   async function boot() {
     try {
-      const r = await chrome.runtime.sendMessage({ type: 'cfg:get' });
-      state.cfg = r?.cfg || FALLBACK_CFG;
+      const cfg = await Host.getCfg();
+      state.cfg = cfg || FALLBACK_CFG;
     } catch {
       state.cfg = FALLBACK_CFG;
     }
@@ -2521,8 +3835,7 @@ if (!window.__CS_BOOTED__) {
 
     // 全局处于运行态时自动续跑
     try {
-      const st = await chrome.runtime.sendMessage({ type: 'state:get' });
-      if (st?.running) start();
+      if (await Host.getRunning()) start();
     } catch { /* ignore */ }
 
     log('注入完成', IS_TOP ? '顶层' : '子 frame', location.href.slice(0, 90));
@@ -2542,6 +3855,32 @@ if (!window.__CS_BOOTED__) {
     hasQuiz,
     panel: ensurePanel,
     state,
+    // 视频弹题（调试用）
+    hasVideoQuiz,
+    scrapeVideoQuiz,
+    fillVideoQuiz,
+    submitVideoQuiz,
+    handleVideoQuiz,
+    // 任务点（调试用）
+    readVideoTaskState,
+    collectTaskPointDetail,
+    isCurrentChapterDone,
+    readVideoThreshold,
+    // 任务队列（搜题酱模型，调试用）
+    scanCxTasks,
+    refreshTaskQueue,
+    queueSummary,
+    openCxTasks,
+    isQueueDone,
+    extractCxRawTaskType,
+    isCourseComplete,
+    routeFingerprint,
+    // 面板（调试用：改完 state 可以主动重绘）
+    setStatus,
+    renderStatus,
+    // 提交安全网（调试用）
+    doSubmitQuiz,
+    doTmpSave,
     get cfg() { return state.cfg; }
   };
 }
