@@ -180,7 +180,9 @@ jobs:
         with:
           name: ${{ steps.ver.outputs.tag }}
           tag_name: ${{ steps.ver.outputs.tag }}
-          files: chaoxing-auto-helper.zip
+          files: |
+            chaoxing-auto-helper.zip
+            userscript/学习通自动学习助手.user.js
           draft: false
           prerelease: false
           body: |
