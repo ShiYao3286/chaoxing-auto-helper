@@ -52,6 +52,6 @@ tests/sample.mp4
 # ------------------------------------------------------------
 # 以下内容**要提交**，特意列出防止误加规则：
 #   build/build-userscript.cjs              构建脚本（源码）
-#   userscript/学习通自动学习助手.user.js    油猴产物（Release 直接发布）
+#   userscript/chaoxing-auto-helper.user.js    油猴产物（Release 直接发布）
 #   docs/images/*.png                       文档配图
 # ------------------------------------------------------------

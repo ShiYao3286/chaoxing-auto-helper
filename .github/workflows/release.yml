@@ -114,7 +114,7 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::产物自检"
-          F='userscript/学习通自动学习助手.user.js'
+          F='userscript/chaoxing-auto-helper.user.js'
           if [ ! -f "$F" ]; then
             echo "::error::找不到油猴脚本产物"
             exit 1
@@ -171,7 +171,7 @@ jobs:
           name: chaoxing-auto-helper-${{ steps.ver.outputs.version }}
           path: |
             chaoxing-auto-helper.zip
-            userscript/学习通自动学习助手.user.js
+            userscript/chaoxing-auto-helper.user.js
           retention-days: 90
 
       - name: 创建 Release
@@ -182,7 +182,7 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             chaoxing-auto-helper.zip
-            userscript/学习通自动学习助手.user.js
+            userscript/chaoxing-auto-helper.user.js
           draft: false
           prerelease: false
           body: |
@@ -202,7 +202,7 @@ jobs:
             ### 方式二：油猴脚本（单文件）
 
             1. 先装 [Tampermonkey](https://microsoftedge.microsoft.com/addons)（或暴力猴）
-            2. 下载 `学习通自动学习助手.user.js`，管理器会自动弹出安装页
+            2. 下载 `chaoxing-auto-helper.user.js`，管理器会自动弹出安装页
             3. **首次调 API 时弹窗问「要访问 xxx 吗」，必须点「总是允许」**，否则请求发不出去
             4. 点油猴图标 → 「学习通自动学习助手」→「⚙ 设置」填 API
 

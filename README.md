@@ -142,7 +142,7 @@ Edge 加载项商店搜 `Tampermonkey` 装上（Chrome 用 Chrome 应用商店�
 ### 2. 装脚本
 
 去 [Releases](https://github.com/ShiYao3286/chaoxing-auto-helper/releases/latest) 下载
-`学习通自动学习助手.user.js`，Tampermonkey 会自动弹出安装页 → 点「安装」。
+`chaoxing-auto-helper.user.js`，Tampermonkey 会自动弹出安装页 → 点「安装」。
 
 或者把 `.user.js` 直接拖进浏览器窗口。
 
@@ -226,7 +226,7 @@ Edge 加载项商店搜 `Tampermonkey` 装上（Chrome 用 Chrome 应用商店�
 │       ├── options/           设置页（扩展专有）
 │       └── popup/             工具栏弹窗
 ├── userscript/
-│   └── 学习通自动学习助手.user.js   ← 构建产物（油猴脚本，不要手改）
+│   └── chaoxing-auto-helper.user.js   ← 构建产物（油猴脚本，不要手改）
 ├── build/
 │   └── build-userscript.cjs   拼接内核 + 5 项校验
 ├── tests/                     测试套件

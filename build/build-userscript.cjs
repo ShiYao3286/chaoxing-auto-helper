@@ -17,7 +17,18 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const EXT = path.join(ROOT, 'extension');
 const OUT_DIR = path.join(ROOT, 'userscript');
-const OUT_FILE = path.join(OUT_DIR, '学习通自动学习助手.user.js');
+/**
+ * 产物文件名刻意用纯 ASCII
+ *
+ * 原因：GitHub Actions 的 action-gh-release 处理中文路径时会把文件名截成
+ * "user.js"（丢掉中文部分），用户下载后看到一个没有辨识度的文件。
+ * 扩展包叫 chaoxing-auto-helper.zip，脚本叫 chaoxing-auto-helper.user.js，
+ * 两者命名一致，也不会在 Windows/macOS/Linux 之间出编码问题。
+ *
+ * 脚本内部的 @name 仍是中文「学习通自动学习助手」，装在油猴里显示中文。
+ */
+const OUT_NAME = 'chaoxing-auto-helper.user.js';
+const OUT_FILE = path.join(OUT_DIR, OUT_NAME);
 
 /** 拼接顺序（与 manifest 的 content_scripts 一致，只把 host 换成脚本版） */
 const PARTS = [

@@ -71,7 +71,7 @@ function check(n, c, e) {
   else { console.log('  ❌ ' + n + (e !== undefined ? '  -> ' + e : '')); fail++; }
 }
 
-const USERSCRIPT = path.join(__dirname, '..', 'userscript', '学习通自动学习助手.user.js');
+const USERSCRIPT = path.join(__dirname, '..', 'userscript', 'chaoxing-auto-helper.user.js');
 
 (async () => {
   const ver = await getJSON('/json/version');

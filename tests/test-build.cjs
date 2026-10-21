@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const FILE = path.join(ROOT, 'userscript', '学习通自动学习助手.user.js');
+const FILE = path.join(ROOT, 'userscript', 'chaoxing-auto-helper.user.js');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'extension', 'manifest.json'), 'utf8'));
 
 let pass = 0, fail = 0;

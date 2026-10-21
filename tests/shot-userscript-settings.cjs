@@ -57,7 +57,7 @@ async function ev(sid, expr, ap = true) {
 (async () => {
   const ver = await getJSON('/json/version');
   await connect(ver.webSocketDebuggerUrl);
-  const code = fs.readFileSync(path.join(__dirname, '..', 'userscript', '学习通自动学习助手.user.js'), 'utf8');
+  const code = fs.readFileSync(path.join(__dirname, '..', 'userscript', 'chaoxing-auto-helper.user.js'), 'utf8');
 
   const cr = await send('Target.createTarget', { url: WEB + '/fake-quiz.html?shot=' + Date.now() });
   const { result: { sessionId } } = await send('Target.attachToTarget', { targetId: cr.result.targetId, flatten: true });
